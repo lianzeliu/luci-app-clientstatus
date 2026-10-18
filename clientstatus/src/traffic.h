@@ -2,14 +2,16 @@
  * traffic.h — MTK 硬件加速感知的流量统计引擎
  *
  * 设计要点:
- *  1. 以 /proc/net/nf_conntrack 的 bytes= 为唯一可信数据源。
- *     内核会把 PPE 硬件流表的 MIB 计数器定期同步回 conntrack accounting
- *     (flowtable counter + FLOW_CLS_STATS), 所以硬件加速走掉的流量
- *     这里一样能数到, 前提是 net.netfilter.nf_conntrack_acct=1。
- *  2. 逐流维护基线做增量, 流老化只丢 key 不丢累计值。
- *  3. 实时速率用 10 秒滑动窗口计算 (硬件计数约 3 秒同步一次,
- *     10 秒覆盖 3 次, 既免疫毛刺又保证启停反应)。
- *  4. 本版本无 WiFi: 纯 conntrack, 不依赖 iwinfo。
+ *  1. 主数据源为 iptables mangle 表的每 IP 计数器 (wrtbwmon 原理):
+ *     每个 LAN IP 建 -s/-d 两条 RETURN 规则挂在 FORWARD 链下,
+ *     每秒 iptables -Z 原子读出精确增量, 无需 per-flow 基线管理,
+ *     不受 conntrack 同步抖动影响; IP->MAC 经 ARP 表归属。
+ *  2. 补充数据源为 conntrack [HW_OFFLOAD] 流: 走 PPE 硬件的包
+ *     不经过 netfilter, iptables 看不到, 用 per-flow 基线跟踪
+ *     内核同步回来的硬件增量, 与 iptables 互补不重叠。
+ *     (需 net.netfilter.nf_conntrack_acct=1, daemon 启动时自动尝试开启)
+ *  3. 实时速率用 8 秒滑动窗口计算, 连续 6 秒无变化直接判停。
+ *  4. 本版本无 WiFi: 不依赖 iwinfo。
  */
 #ifndef CLIENTSTATUS_TRAFFIC_H
 #define CLIENTSTATUS_TRAFFIC_H
