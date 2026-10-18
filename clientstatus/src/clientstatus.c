@@ -791,9 +791,9 @@ int main(void) {
             last_scan = time(NULL);
         }
 
-        traf_tick();  /* 2s 一次: conntrack 采样 + 滑动窗口速率 + 落盘 */
+        traf_tick();  /* 快速采样: conntrack 解析 + 滑动窗口速率 + 落盘 */
 
-        for (unsigned r = 2; g_run && r > 0; ) {
+        for (unsigned r = TRAF_TICK; g_run && r > 0; ) {
             r = sleep(r);
             if (g_usr1) break;  /* 有人看页面 -> 立刻做一次客户端扫描 */
         }

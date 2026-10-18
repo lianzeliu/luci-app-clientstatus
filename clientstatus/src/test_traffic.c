@@ -137,17 +137,17 @@ int main(void) {
     CHECK(t1 && t1->tx_tot == 7880 + 2000 && t1->rx_tot == 259500 + 10000,
           "inbound flow attributed via dst (tx=9880 rx=269500)");
 
-    /* ---- 3. 滑动窗口速率 (10s 窗口, 硬件同步约 3s 一次) ---- */
+    /* ---- 3. 滑动窗口速率 (8s 窗口, 1s 采样, 硬件同步约 3s 一次) ---- */
     TrafCli tc;
     memset(&tc, 0, sizeof tc);
-    /* 模拟 30 秒: 每 3 秒同步一次硬件计数, 每次 +30000 (真实速率 10000 B/s),
-       2 秒采样一次 (部分 tick 无变化, 还原抖动) */
+    /* 模拟 24 秒: 每 3 秒同步一次硬件计数, 每次 +30000 (真实速率 10000 B/s),
+       1 秒采样一次 (部分 tick 无变化, 还原抖动) */
     time_t base = 1000000;
-    for (int s = 0; s <= 30; s += 2) {
+    for (int s = 0; s <= 24; s++) {
         tc.rx_tot = (uint64_t)(s / 3) * 30000;
         push_sample(&tc, base + s);
-        /* 全程不能出现毛刺 (>=15000) 或归零 */
-        if (s >= 10) {
+        /* 预热后全程不能出现毛刺 (>=15000) 或异常归零 */
+        if (s >= 8) {
             char msg[96];
             snprintf(msg, sizeof msg, "t=%ds rate sane (%.0f)", s, tc.rx_spd);
             CHECK(tc.rx_spd > 5000 && tc.rx_spd < 15000, msg);
@@ -155,6 +155,33 @@ int main(void) {
     }
     /* 稳定后速率应在 10000 附近 */
     CHECK(tc.rx_spd > 8000 && tc.rx_spd < 14000, "windowed rate ~10000 B/s");
+
+    /* ---- 4. 快速判停: 连续 6 tick 无变化 -> 速率置 0 ---- */
+    {
+        TrafCli t2;
+        memset(&t2, 0, sizeof t2);
+        time_t b2 = 2000000;
+        /* 先跑 10 秒流量 */
+        for (int s = 0; s <= 10; s++) {
+            t2.rx_tot = (uint64_t)(s / 3) * 30000;
+            push_sample(&t2, b2 + s);
+        }
+        CHECK(t2.rx_spd > 5000, "traffic flowing, speed > 0");
+        /* 停流: 累计冻结 */
+        uint64_t frozen = t2.rx_tot;
+        int snapped_at = -1;
+        for (int s = 11; s <= 20; s++) {
+            t2.rx_tot = frozen;
+            push_sample(&t2, b2 + s);
+            if (t2.rx_spd == 0 && snapped_at < 0) snapped_at = s;
+        }
+        CHECK(snapped_at > 0 && snapped_at <= 16,
+              "flat 6 ticks -> snap to 0 (no 8s window lag)");
+        /* 恢复流量后立刻回升 */
+        t2.rx_tot = frozen + 50000;
+        push_sample(&t2, b2 + 21);
+        CHECK(t2.rx_spd > 0, "traffic resumes, speed recovers immediately");
+    }
 
     printf(fails ? "\n%d FAILURES\n" : "\nALL PASS\n", fails);
     return fails ? 1 : 0;

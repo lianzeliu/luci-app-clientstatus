@@ -32,9 +32,9 @@
 #define ARP_PATH    "/proc/net/arp"
 #define LEASES_PATH "/tmp/dhcp.leases"
 
-#define TRAF_TICK     2    /* 采样间隔(秒) */
-#define TRAF_WIN      10   /* 速率滑动窗口(秒): 硬件计数约 3s 同步一次, 10s 覆盖 3 次 */
-#define TRAF_SLOTS    18   /* 环形槽位数 */
+#define TRAF_WIN      8    /* 速率滑动窗口(秒): 覆盖约 2-3 次硬件同步 */
+#define TRAF_SLOTS    12   /* 环形槽位数 >= WIN/TICK + 2 */
+#define FLAT_SNAP     6    /* 连续 N 个 tick 累计不变 -> 直接判停, 速率置 0 */
 #define MAX_CLI       512
 #define FLOW_BUCKETS  4096
 #define MAX_LINE      4096
@@ -312,6 +312,8 @@ typedef struct {
     double rx_spd, tx_spd;                 /* 字节/秒, 滑动窗口 */
     uint64_t rx_tot, tx_tot;              /* 累计 (单调) */
     uint64_t hwr_tot, hwt_tot;            /* 累计硬件加速字节 */
+    uint64_t prev_tot;                    /* 上 tick 的 rx+tx, 用于判停 */
+    int flat_ticks;                       /* 连续累计不变的 tick 数 */
 } TrafCli;
 
 static TrafCli g_cli[MAX_CLI];
@@ -418,6 +420,12 @@ static void sample_conntrack_file(FILE *f) {
 /* ─── 滑动窗口速率 + 落盘 ───────────────────────────── */
 
 static void push_sample(TrafCli *tc, time_t now) {
+    /* 快速判停: 硬件约 3s 同步一次, 连续 6 个 tick (6s) 无变化即判停 */
+    uint64_t tot = tc->rx_tot + tc->tx_tot;
+    if (tot == tc->prev_tot) tc->flat_ticks++;
+    else tc->flat_ticks = 0;
+    tc->prev_tot = tot;
+
     tc->head = (tc->head + 1) % TRAF_SLOTS;
     tc->rx_hist[tc->head] = tc->rx_tot;
     tc->tx_hist[tc->head] = tc->tx_tot;
@@ -434,7 +442,9 @@ static void push_sample(TrafCli *tc, time_t now) {
         oldest = idx;
     }
     double dt = (double)(tc->ts_hist[tc->head] - tc->ts_hist[oldest]);
-    if (dt >= 2 * TRAF_TICK && tc->rx_hist[tc->head] >= tc->rx_hist[oldest]) {
+    if (tc->flat_ticks >= FLAT_SNAP) {
+        tc->rx_spd = tc->tx_spd = 0;  /* 快速判停 */
+    } else if (dt >= 2 * TRAF_TICK && tc->rx_hist[tc->head] >= tc->rx_hist[oldest]) {
         tc->rx_spd = (double)(tc->rx_hist[tc->head] - tc->rx_hist[oldest]) / dt;
         tc->tx_spd = (double)(tc->tx_hist[tc->head] - tc->tx_hist[oldest]) / dt;
     } else {

@@ -364,24 +364,10 @@
 
   <div class="cs-cards">
     <div class="cs-card">
-      <div class="cs-card-icon blue">📱</div>
+      <div class="cs-card-icon blue">💻</div>
       <div class="cs-card-body">
         <div class="cs-card-num" id="cs-total">0</div>
         <div class="cs-card-label"><%:Total Devices%></div>
-      </div>
-    </div>
-    <div class="cs-card">
-      <div class="cs-card-icon purple">📶</div>
-      <div class="cs-card-body">
-        <div class="cs-card-num" id="cs-wireless">0</div>
-        <div class="cs-card-label"><%:Wireless%></div>
-      </div>
-    </div>
-    <div class="cs-card">
-      <div class="cs-card-icon teal">🔌</div>
-      <div class="cs-card-body">
-        <div class="cs-card-num" id="cs-ethernet">0</div>
-        <div class="cs-card-label"><%:Ethernet%></div>
       </div>
     </div>
     <div class="cs-card">
@@ -421,11 +407,6 @@
         <option value="Allowed"><%:Allowed%></option>
         <option value="Blocked"><%:Blocked%></option>
       </select>
-      <select class="cs-filter" id="cs-nct-filter">
-        <option value="all"><%:All NCT%></option>
-        <option value="Wireless"><%:Wireless%></option>
-        <option value="Ethernet"><%:Ethernet%></option>
-      </select>
     </div>
     <div class="cs-actions">
       <label class="cs-auto">
@@ -461,7 +442,6 @@
           <th data-col="mac"><%:MAC%> <span class="sort-arrow">▼</span></th>
           <th data-col="ipv4"><%:IP%> <span class="sort-arrow">▼</span></th>
           <th data-col="duration"><%:Duration%> <span class="sort-arrow">▼</span></th>
-          <th data-col="nct"><%:NCT%> <span class="sort-arrow">▼</span></th>
           <th data-col="speed_down">↓ <%:SPEED%> <span class="sort-arrow">▼</span></th>
           <th data-col="speed_up">↑ <%:SPEED%> <span class="sort-arrow">▼</span></th>
           <th data-col="acl"><%:ACL%> <span class="sort-arrow">▼</span></th>
@@ -540,10 +520,6 @@
     return t;
   }
 
-  function isWirelessNct(nct) {
-    return nct && nct !== 'Ethernet' && nct !== '—' && nct !== '' && nct !== '-';
-  }
-
   function fmtSpeed(bps) {
     if (!bps || bps <= 0) return '-';
     if (bps < 1024) return bps + 'B/s';
@@ -559,7 +535,6 @@
       case 'mac':        return c.mac.toLowerCase();
       case 'ipv4':       return c.ipv4;
       case 'duration':   return parseDuration(c.duration);
-      case 'nct':        return isWirelessNct(c.nct) ? 1 : 0;
       case 'acl':        return c.acl === 'Blocked' ? 0 : 1;
       case 'speed_down': return (speedData[c.mac] || {}).rx || 0;
       case 'speed_up':   return (speedData[c.mac] || {}).tx || 0;
@@ -646,7 +621,6 @@
     var search    = document.getElementById('cs-search').value.toLowerCase();
     var filter    = document.getElementById('cs-filter').value;
     var aclFilter = document.getElementById('cs-acl-filter').value;
-    var nctFilter = document.getElementById('cs-nct-filter').value;
     var tbody     = document.getElementById('cs-body');
     var empty     = document.getElementById('cs-empty');
 
@@ -657,19 +631,12 @@
       var c = allClients[i];
       if (filter !== 'all' && c.status !== filter) continue;
       if (aclFilter !== 'all' && c.acl !== aclFilter) continue;
-      if (nctFilter !== 'all') {
-        if (nctFilter === 'Ethernet' && c.nct !== 'Ethernet') continue;
-        if (nctFilter === 'Wireless' && c.nct === 'Ethernet') continue;
-      }
-      if (search && (c.hostname + c.mac + c.ipv4 + (c.nct || '')).toLowerCase().indexOf(search) === -1) continue;
+      if (search && (c.hostname + c.mac + c.ipv4).toLowerCase().indexOf(search) === -1) continue;
 
       var sc = c.status === 'online' ? 'online' : 'offline';
       var sl = c.status === 'online' ? '<%:Online%>' : '<%:Offline%>';
       var ac = c.acl === 'Blocked' ? 'blocked' : 'allowed';
       var al = c.acl === 'Blocked' ? '<%:Blocked%>' : '<%:Allowed%>';
-      var isWl = isWirelessNct(c.nct);
-      var nc = isWl ? 'wireless' : 'ethernet';
-      var nl = isWl ? c.nct : '<%:Ethernet%>';
       var hostDisplay = escapeHtml(c.hostname);
       var customMark = c.custom ? ' <span class="cs-custom-mark">&#9998;</span>' : '';
       var sp = speedData[c.mac] || { rx: 0, tx: 0 };
@@ -683,7 +650,6 @@
       html += '<td class="cs-mac"><span class="cs-cell-label"><%:MAC%>:</span>' + escapeHtml(c.mac) + '</td>';
       html += '<td class="cs-mono"><span class="cs-cell-label"><%:IP%>:</span>' + (c.status === 'offline' ? '-' : escapeHtml(c.ipv4 || '-')) + '</td>';
       html += '<td class="cs-duration"><span class="cs-cell-label"><%:Duration%>:</span>' + escapeHtml(c.duration) + '</td>';
-      html += '<td><span class="cs-cell-label"><%:NCT%>:</span>' + ('<span class="cs-nct ' + nc + '">' + escapeHtml(nl) + '</span>') + '</td>';
       html += '<td class="cs-speed cs-speed-down"><span class="cs-cell-label">↓</span><span class="cs-speed-val">' + fmtSpeed(sp.rx) + '</span></td>';
       html += '<td class="cs-speed cs-speed-up"><span class="cs-cell-label">↑</span><span class="cs-speed-val">' + fmtSpeed(sp.tx) + '</span></td>';
       html += '<td><span class="cs-cell-label"><%:ACL%>:</span><span class="cs-acl ' + ac + '" data-mac="' + escapeAttr(c.mac) + '" title="<%:Click to toggle%>">' + al + '</span></td>';
@@ -694,18 +660,15 @@
     tbody.innerHTML = html;
     empty.style.display = shown === 0 ? 'block' : 'none';
 
-    var total = allClients.length, online = 0, blocked = 0, wireless = 0, ethernet = 0;
+    var total = allClients.length, online = 0, blocked = 0;
     for (var j = 0; j < total; j++) {
       if (allClients[j].status === 'online') online++;
       if (allClients[j].acl === 'Blocked') blocked++;
-      if (isWirelessNct(allClients[j].nct)) wireless++; else ethernet++;
     }
     document.getElementById('cs-total').textContent     = total;
     document.getElementById('cs-online').textContent    = online;
     document.getElementById('cs-offline').textContent   = total - online;
     document.getElementById('cs-blocked').textContent   = blocked;
-    document.getElementById('cs-wireless').textContent  = wireless;
-    document.getElementById('cs-ethernet').textContent  = ethernet;
   }
 
   function renderSpeed() {
@@ -802,11 +765,10 @@
   document.getElementById('cs-search').addEventListener('input', render);
   document.getElementById('cs-filter').addEventListener('change', render);
   document.getElementById('cs-acl-filter').addEventListener('change', render);
-  document.getElementById('cs-nct-filter').addEventListener('change', render);
 
   function startTimer() { stopTimer(); timer = setInterval(csCheck, 30000); }
   function stopTimer() { if (timer) { clearInterval(timer); timer = null; } }
-  function startSpeedTimer() { stopSpeedTimer(); speedTimer = setInterval(csSpeed, 5000); }
+  function startSpeedTimer() { stopSpeedTimer(); speedTimer = setInterval(csSpeed, 2000); }
   function stopSpeedTimer() { if (speedTimer) { clearInterval(speedTimer); speedTimer = null; } }
 
   document.getElementById('cs-autorefresh').addEventListener('change', function() {

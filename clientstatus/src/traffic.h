@@ -14,6 +14,9 @@
 #ifndef CLIENTSTATUS_TRAFFIC_H
 #define CLIENTSTATUS_TRAFFIC_H
 
+/* 采样间隔(秒): 硬件计数约 3s 同步一次, 1s 采样保证不漏掉任何一次同步 */
+#define TRAF_TICK 1
+
 /* daemon 启动时调用一次 */
 void traf_init(const char *lan_iface);
 
