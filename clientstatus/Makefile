@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=clientstatus
-PKG_VERSION:=1.0.8
+PKG_VERSION:=1.0.9
 PKG_RELEASE:=1
 
 PKG_MAINTAINER:=Mige99
@@ -33,7 +33,7 @@ define Build/Compile
 	$(TARGET_CC) $(TARGET_CFLAGS) $(EXTRA_CFLAGS) \
 		$(TARGET_LDFLAGS) $(EXTRA_LDFLAGS) \
 		-o $(PKG_BUILD_DIR)/clientstatus \
-		$(PKG_BUILD_DIR)/clientstatus.c
+		$(PKG_BUILD_DIR)/clientstatus.c $(PKG_BUILD_DIR)/traffic.c
 endef
 
 define Package/clientstatus/install

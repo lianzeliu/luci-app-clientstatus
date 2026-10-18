@@ -9,7 +9,7 @@ LUCI_TITLE:=LuCI Support for Client Status Monitor && Management
 LUCI_DEPENDS:=+clientstatus +luci-compat
 LUCI_PKGARCH:=all
 
-PKG_VERSION:=1.0.9
+PKG_VERSION:=1.1.0
 PKG_RELEASE:=1
 
 include $(TOPDIR)/feeds/luci/luci.mk

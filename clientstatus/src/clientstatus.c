@@ -22,6 +22,7 @@
 #include <sys/wait.h>
 #include <ifaddrs.h>
 #include <arpa/inet.h>
+#include "traffic.h"
 
 /* ─── Limits ─────────────────────────────────────────── */
 
@@ -741,6 +742,17 @@ static void merge_and_output(void) {
 
 /* ─── Main ───────────────────────────────────────────── */
 
+/* AP 发现 + 同步给流量引擎 (WiFi 驱动字节采样用) */
+static void refresh_ap(void) {
+    build_ap();
+    char ifns[MAX_AP][32];
+    for (int i = 0; i < g_ap_n; i++) {
+        strncpy(ifns[i], g_ap[i].ifn, 31);
+        ifns[i][31] = '\0';
+    }
+    traf_set_wifi(ifns, g_ap_n, g_wifi_byte_stats == 1);
+}
+
 int main(void) {
     FILE *pf = fopen(PID_FILE, "w");
     if (pf) { fprintf(pf, "%d\n", getpid()); fclose(pf); }
@@ -759,30 +771,42 @@ int main(void) {
         return 1;
     }
     init_ct_thresh();
-    build_ap();
+    refresh_ap();
     flush_neigh();
+    traf_init(g_lan);
 
+    /* 主循环: 客户端慢速扫描 (30s/300s) + 流量快速采样 (2s) */
+    time_t last_scan = 0;
+    int was_active = 0;
     while (g_run) {
-        time_t t0 = time(NULL);
+        time_t now = time(NULL);
+        int interval = was_active ? g_interval : IDLE_INTERVAL;
 
-        /* Retry WiFi byte stats detection if undetermined */
-        if (g_has_wifi && g_wifi_byte_stats == 0)
-            build_ap();
+        if (g_usr1 || now - last_scan >= interval) {
+            was_active = g_usr1;
+            g_usr1 = 0;
 
-        load_state();
-        collect_conntrack();
-        if (g_has_wifi) collect_wifi();
-        collect_arp();
-        collect_dhcp();
-        collect_ping();
-        merge_and_output();
+            /* Retry WiFi byte stats detection if undetermined */
+            if (g_has_wifi && g_wifi_byte_stats == 0)
+                refresh_ap();
 
-        int was_active = g_usr1; g_usr1 = 0;
-        int sl = (was_active ? g_interval : IDLE_INTERVAL) - (int)(time(NULL) - t0);
-        if (sl < 1) sl = 1;
-        for (unsigned r = (unsigned)sl; g_run && r > 0; ) {
+            load_state();
+            collect_conntrack();
+            if (g_has_wifi) collect_wifi();
+            collect_arp();
+            collect_dhcp();
+            collect_ping();
+            merge_and_output();
+            traf_rebuild_map();
+
+            last_scan = time(NULL);
+        }
+
+        traf_tick();  /* 2s 一次: conntrack 采样 + 滑动窗口速率 + 落盘 */
+
+        for (unsigned r = 2; g_run && r > 0; ) {
             r = sleep(r);
-            if (g_usr1) break;
+            if (g_usr1) break;  /* 有人看页面 -> 立刻做一次客户端扫描 */
         }
     }
 

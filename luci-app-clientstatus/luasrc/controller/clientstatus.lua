@@ -105,197 +105,52 @@ end
 function action_speed()
 	send_usr1()
 
-	local CACHE = "/tmp/clientstatus.speed_cache"
-	local now = os.time()
-	local alpha = 0.3
-
-	-- 1. Read online clients and AP interfaces from /tmp/clientstatus
-	local clients = {}
-	local has_wifi = false
-	local ap_list = {}
+	-- 1. 在线客户端 MAC 集合 (读 daemon 的客户端状态文件, 空格分隔, 第 2 列为状态)
+	local online = {}
 	local f = io.open("/tmp/clientstatus", "r")
-	if not f then
-		luci.http.prepare_content("application/json")
-		luci.http.write_json({ clients = {}, updated = os.date("%Y-%m-%d %H:%M:%S") })
-		return
-	end
-	for line in f:lines() do
-		if line:sub(1, 1) == "#" then
-			-- enabled: iwinfo path; conntrack: skip iwinfo; disabled: no wifi at all
-			if line:match("WiFi:%s*enabled") then
-				has_wifi = true
-			end
-			if has_wifi then
-				local ap_entry = line:match("^# AP:%s*(.+)")
-				if ap_entry then
-					local iface = ap_entry:match("^(.-)|")
-					if iface and iface ~= "" then
-						ap_list[#ap_list + 1] = iface
-					end
-				end
-			end
-		else
-			local parts = {}
-			for p in line:match("^%s*(.-)%s*$"):gmatch("%S+") do
-				parts[#parts + 1] = p
-			end
-			if #parts >= 6 and parts[2] == "online" then
-				local mac = parts[1]:upper()
-				local ip = parts[4]
-				local cnt = parts[6] or "Ethernet"
-				if ip == "\226\128\148" or ip == "-" then ip = nil end
-				clients[mac] = {
-					ip = ip,
-					wifi = (cnt ~= "Ethernet" and cnt ~= "\226\128\148" and cnt ~= "")
-				}
-			end
-		end
-	end
-	f:close()
-
-	-- 2. Collect per-MAC byte counters
-	local mac_rx, mac_tx = {}, {}
-
-	-- 2a. WiFi bytes via ubus call iwinfo assoclist (only when enabled)
-	if has_wifi and #ap_list > 0 then
-		local json = require("luci.jsonc")
-		for _, iface in ipairs(ap_list) do
-			local sf = io.popen(string.format(
-				'ubus call iwinfo assoclist \'{"device":"%s"}\' 2>/dev/null', iface))
-			if sf then
-				local out = sf:read("*a")
-				sf:close()
-				if out and #out > 10 then
-					local ok, data = pcall(json.parse, out)
-					if ok and data and data.results then
-						for _, sta in ipairs(data.results) do
-							if sta.mac then
-								local um = sta.mac:upper()
-								if clients[um] then
-									local tx_bytes = sta.tx and sta.tx.bytes or 0
-									local rx_bytes = sta.rx and sta.rx.bytes or 0
-									mac_rx[um] = (mac_rx[um] or 0) + tx_bytes
-									mac_tx[um] = (mac_tx[um] or 0) + rx_bytes
-								end
-							end
-						end
-					end
+	if f then
+		for line in f:lines() do
+			if line:sub(1, 1) ~= "#" then
+				local parts = {}
+				for p in line:gmatch("%S+") do parts[#parts + 1] = p end
+				if #parts >= 2 and parts[2] == "online" then
+					online[parts[1]:upper()] = true
 				end
 			end
 		end
+		f:close()
 	end
 
-	-- 2b. Conntrack bytes
-	--     enabled mode: wired clients only
-	--     conntrack/disabled mode: all clients
-	local ip_to_mac = {}
-	for mac, info in pairs(clients) do
-		if info.ip then
-			if has_wifi then
-				-- enabled: only wired clients via conntrack
-				if not info.wifi then
-					ip_to_mac[info.ip] = mac
-				end
-			else
-				-- conntrack or disabled: all clients via conntrack
-				ip_to_mac[info.ip] = mac
-			end
-		end
-	end
-
-	if next(ip_to_mac) then
-		local ct = io.open("/proc/net/nf_conntrack", "r")
-		if ct then
-			for line in ct:lines() do
-				if not line:match("^ipv6") then
-					local src_ip = line:match("src=(%d+%.%d+%.%d+%.%d+)")
-					local mac = src_ip and ip_to_mac[src_ip]
-					if mac then
-						local first = true
-						local b1, b2
-						for bv in line:gmatch("bytes=(%d+)") do
-							if first then
-								b1 = tonumber(bv)
-								first = false
-							else
-								b2 = tonumber(bv)
-								break
-							end
-						end
-						if b1 then mac_tx[mac] = (mac_tx[mac] or 0) + b1 end
-						if b2 then mac_rx[mac] = (mac_rx[mac] or 0) + b2 end
-					end
-				end
-			end
-			ct:close()
-		end
-	end
-
-	-- 3. Read previous cache
-	local cache = {}
-	local cf = io.open(CACHE, "r")
-	if cf then
-		for line in cf:lines() do
-			local p = {}
-			for v in line:gmatch("[^|]+") do
-				p[#p + 1] = v
-			end
-			if #p >= 6 then
-				cache[p[1]] = {
-					rx  = tonumber(p[2]) or 0,
-					tx  = tonumber(p[3]) or 0,
-					srx = tonumber(p[4]) or 0,
-					stx = tonumber(p[5]) or 0,
-					ts  = tonumber(p[6]) or 0
-				}
-			end
-		end
-		cf:close()
-	end
-
-	-- 4. Compute speeds with EWMA smoothing
+	-- 2. 读流量引擎预计算结果 (daemon 每 2s 采样, 30s 滑动窗口速率)
+	--    格式: MAC|IP|RX_SPD|TX_SPD|RX_TOT|TX_TOT|HW_RX|HW_TX
 	local result = {}
-	for mac in pairs(clients) do
-		local cur_rx = mac_rx[mac] or 0
-		local cur_tx = mac_tx[mac] or 0
-		local c = cache[mac]
-		local rx_spd, tx_spd = 0, 0
-
-		if c and c.ts > 0 and now > c.ts and (now - c.ts) <= 10 then
-			local dt = now - c.ts
-			local irx = math.max(0, (cur_rx - c.rx) / dt)
-			local itx = math.max(0, (cur_tx - c.tx) / dt)
-			rx_spd = alpha * irx + (1 - alpha) * (c.srx or 0)
-			tx_spd = alpha * itx + (1 - alpha) * (c.stx or 0)
+	local tf = io.open("/tmp/clientstatus.traffic", "r")
+	if tf then
+		for line in tf:lines() do
+			if line:sub(1, 1) ~= "#" then
+				local p = {}
+				for v in line:gmatch("[^|]+") do p[#p + 1] = v end
+				if #p >= 8 then
+					local mac = p[1]:upper()
+					if online[mac] then
+						result[mac] = {
+							rx = tonumber(p[3]) or 0,
+							tx = tonumber(p[4]) or 0,
+						}
+					end
+				end
+			end
 		end
-
-		result[mac] = {
-			rx = math.floor(rx_spd + 0.5),
-			tx = math.floor(tx_spd + 0.5)
-		}
-
-		cache[mac] = {
-			rx = cur_rx,
-			tx = cur_tx,
-			srx = rx_spd,
-			stx = tx_spd,
-			ts = now
-		}
+		tf:close()
 	end
 
-	-- 5. Write cache atomically
-	local tmp = CACHE .. ".tmp"
-	local wf = io.open(tmp, "w")
-	if wf then
-		for m, c in pairs(cache) do
-			wf:write(string.format("%s|%d|%d|%.1f|%.1f|%d\n",
-				m, c.rx, c.tx, c.srx, c.stx, c.ts))
+	-- 3. 在线但暂无数据的客户端补 0 (daemon 刚启动 / 新上线)
+	for mac in pairs(online) do
+		if not result[mac] then
+			result[mac] = { rx = 0, tx = 0 }
 		end
-		wf:close()
-		os.rename(tmp, CACHE)
 	end
 
-	-- 6. Return JSON
 	luci.http.prepare_content("application/json")
 	luci.http.write_json({
 		clients = result,
