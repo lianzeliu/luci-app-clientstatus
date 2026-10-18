@@ -80,17 +80,10 @@
   padding: 6px 6px; box-shadow: var(--cs-shadow);
   display: flex; align-items: center; gap: 24px;
 }
-.cs-card-icon {
   width: 30px; height: 30px; border-radius: 12px;
   display: flex; align-items: center; justify-content: center;
   font-size: 28px; flex-shrink: 0;
 }
-.cs-card-icon.green  { background: var(--cs-green-bg);  color: var(--cs-green); }
-.cs-card-icon.red    { background: var(--cs-red-bg);    color: var(--cs-red); }
-.cs-card-icon.blue   { background: var(--cs-blue-bg);   color: var(--cs-blue); }
-.cs-card-icon.orange { background: var(--cs-orange-bg); color: var(--cs-orange); }
-.cs-card-icon.purple { background: var(--cs-purple-bg); color: var(--cs-purple); }
-.cs-card-icon.teal   { background: var(--cs-teal-bg);   color: var(--cs-teal); }
 .cs-card-num { font-size: 22px; font-weight: 700; line-height: 1; color: var(--cs-text); }
 .cs-card-label { font-size: 13px; color: var(--cs-text-3); margin-top: 4px; }
 
@@ -266,7 +259,6 @@
   .cs-wrap { padding: 0 12px; }
   .cs-cards { display: grid; grid-template-columns: repeat(3, 120px); justify-content: space-between; row-gap: 10px; margin-bottom: 16px; }
   .cs-card { max-width: none; padding: 6px; gap: 6px; border-radius: 8px; }
-  .cs-card-icon { width: 42px; height: 42px; border-radius: 10px; }
   .cs-card-num { font-size: 22px; }
   .cs-card-label { font-size: 12px; }
 
@@ -339,7 +331,6 @@
   .cs-wrap { padding: 0 8px; min-width: 320px; }
   .cs-cards { gap: 14px; grid-template-columns: 1fr 1fr 1fr; }
   .cs-card { padding: 6px; gap: 6px; border-radius: 8px; }
-  .cs-card-icon { width: 36px; height: 36px; font-size: 18px; border-radius: 6px; }
   .cs-card-num { font-size: 16px; }
   .cs-card-label { font-size: 10px; }
   #cs-search { font-size: 9px !important; }
@@ -364,28 +355,24 @@
 
   <div class="cs-cards">
     <div class="cs-card">
-      <div class="cs-card-icon blue">💻</div>
       <div class="cs-card-body">
         <div class="cs-card-num" id="cs-total">0</div>
         <div class="cs-card-label"><%:Total Devices%></div>
       </div>
     </div>
     <div class="cs-card">
-      <div class="cs-card-icon green">✅</div>
       <div class="cs-card-body">
         <div class="cs-card-num" id="cs-online">0</div>
         <div class="cs-card-label"><%:Online%></div>
       </div>
     </div>
     <div class="cs-card">
-      <div class="cs-card-icon red">⭕</div>
       <div class="cs-card-body">
         <div class="cs-card-num" id="cs-offline">0</div>
         <div class="cs-card-label"><%:Offline%></div>
       </div>
     </div>
     <div class="cs-card">
-      <div class="cs-card-icon orange">🚫</div>
       <div class="cs-card-body">
         <div class="cs-card-num" id="cs-blocked">0</div>
         <div class="cs-card-label"><%:Blocked%></div>
