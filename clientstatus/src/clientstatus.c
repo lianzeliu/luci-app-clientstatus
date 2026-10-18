@@ -742,17 +742,6 @@ static void merge_and_output(void) {
 
 /* ─── Main ───────────────────────────────────────────── */
 
-/* AP 发现 + 同步给流量引擎 (WiFi 驱动字节采样用) */
-static void refresh_ap(void) {
-    build_ap();
-    char ifns[MAX_AP][32];
-    for (int i = 0; i < g_ap_n; i++) {
-        strncpy(ifns[i], g_ap[i].ifn, 31);
-        ifns[i][31] = '\0';
-    }
-    traf_set_wifi(ifns, g_ap_n, g_wifi_byte_stats == 1);
-}
-
 int main(void) {
     FILE *pf = fopen(PID_FILE, "w");
     if (pf) { fprintf(pf, "%d\n", getpid()); fclose(pf); }
@@ -771,7 +760,7 @@ int main(void) {
         return 1;
     }
     init_ct_thresh();
-    refresh_ap();
+    build_ap();
     flush_neigh();
     traf_init(g_lan);
 
@@ -788,7 +777,7 @@ int main(void) {
 
             /* Retry WiFi byte stats detection if undetermined */
             if (g_has_wifi && g_wifi_byte_stats == 0)
-                refresh_ap();
+                build_ap();
 
             load_state();
             collect_conntrack();

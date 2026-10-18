@@ -137,19 +137,24 @@ int main(void) {
     CHECK(t1 && t1->tx_tot == 7880 + 2000 && t1->rx_tot == 259500 + 10000,
           "inbound flow attributed via dst (tx=9880 rx=269500)");
 
-    /* ---- 3. 滑动窗口速率 (毛刺免疫) ---- */
+    /* ---- 3. 滑动窗口速率 (10s 窗口, 硬件同步约 3s 一次) ---- */
     TrafCli tc;
     memset(&tc, 0, sizeof tc);
-    /* 模拟: 30 秒内累计从 0 到 300000, 但全部字节在最后一个 tick 到达 (GC 毛刺) */
+    /* 模拟 30 秒: 每 3 秒同步一次硬件计数, 每次 +30000 (真实速率 10000 B/s),
+       2 秒采样一次 (部分 tick 无变化, 还原抖动) */
     time_t base = 1000000;
-    for (int i = 0; i < 15; i++) {
-        tc.rx_tot = 0;
-        push_sample(&tc, base + i * 2);
+    for (int s = 0; s <= 30; s += 2) {
+        tc.rx_tot = (uint64_t)(s / 3) * 30000;
+        push_sample(&tc, base + s);
+        /* 全程不能出现毛刺 (>=15000) 或归零 */
+        if (s >= 10) {
+            char msg[96];
+            snprintf(msg, sizeof msg, "t=%ds rate sane (%.0f)", s, tc.rx_spd);
+            CHECK(tc.rx_spd > 5000 && tc.rx_spd < 15000, msg);
+        }
     }
-    tc.rx_tot = 300000;
-    push_sample(&tc, base + 30);
-    /* 窗口=30s: (300000-0)/30 = 10000 B/s, 而不是 300000/2=150000 */
-    CHECK(tc.rx_spd > 9000 && tc.rx_spd < 11000, "burst spread over window (~10000 B/s)");
+    /* 稳定后速率应在 10000 附近 */
+    CHECK(tc.rx_spd > 8000 && tc.rx_spd < 14000, "windowed rate ~10000 B/s");
 
     printf(fails ? "\n%d FAILURES\n" : "\nALL PASS\n", fails);
     return fails ? 1 : 0;

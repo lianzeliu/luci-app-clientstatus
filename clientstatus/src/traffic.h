@@ -7,10 +7,9 @@
  *     (flowtable counter + FLOW_CLS_STATS), 所以硬件加速走掉的流量
  *     这里一样能数到, 前提是 net.netfilter.nf_conntrack_acct=1。
  *  2. 逐流维护基线做增量, 流老化只丢 key 不丢累计值。
- *  3. 实时速率用 30 秒滑动窗口计算, 免疫内核 GC 批量同步带来的毛刺
- *     (毛刺是"实时偏高 2-3 倍"的根因)。
- *  4. WiFi 客户端优先用 mt76 驱动的 per-station 计数 (iwinfo),
- *     驱动计数冻结 (WED 等场景) 时自动回退到 conntrack。
+ *  3. 实时速率用 10 秒滑动窗口计算 (硬件计数约 3 秒同步一次,
+ *     10 秒覆盖 3 次, 既免疫毛刺又保证启停反应)。
+ *  4. 本版本无 WiFi: 纯 conntrack, 不依赖 iwinfo。
  */
 #ifndef CLIENTSTATUS_TRAFFIC_H
 #define CLIENTSTATUS_TRAFFIC_H
@@ -20,9 +19,6 @@ void traf_init(const char *lan_iface);
 
 /* 客户端发现完成后刷新 IP->MAC 映射 */
 void traf_rebuild_map(void);
-
-/* AP 发现完成后同步 AP 列表; drv_ok=驱动是否上报 per-station 字节 */
-void traf_set_wifi(const char (*ifnames)[32], int n, int drv_ok);
 
 /* 每 2 秒调用一次: 采样 + 计算 + 写文件 */
 void traf_tick(void);

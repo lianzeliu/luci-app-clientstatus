@@ -1,14 +1,15 @@
 /*
- * traffic.c — MTK 硬件加速感知的流量统计引擎
+ * traffic.c — MTK 硬件加速感知的流量统计引擎 (无 WiFi 版)
  *
- * 数据源:
- *   有线 / 回退 : /proc/net/nf_conntrack 的 bytes= 累计值
- *   WiFi 优先   : ubus iwinfo assoclist 的 per-station tx/rx.bytes (mt76 驱动)
+ * 数据源: /proc/net/nf_conntrack 的 bytes= 累计值。
  *
  * 关键正确性保证:
  *  - 逐流 (五元组) 维护基线, 只累计增量; 流老化/重建不污染累计值。
- *  - 实时速率 = 30 秒滑动窗口内的 (累计差 / 时间差), 不把内核 GC
- *    批量同步的字节算到 1 秒里 (之前"实时偏高 2-3 倍"的根因)。
+ *  - 实时速率 = 10 秒滑动窗口内的 (累计差 / 时间差)。
+ *    内核约每 3 秒把 PPE 硬件计数同步进 conntrack (GC 每秒跑,
+ *    节流条件为 timeout 的 10%, TCP/UDP offload_timeout=30s),
+ *    10 秒窗口覆盖约 3 次同步, 既不受单次同步抖动影响,
+ *    启停反应也在 10 秒内。
  *  - 区分 [HW_OFFLOAD] 流, 单独累计硬件加速字节。
  *  - 内网 IP 做目的端的流 (外部主动连入) 也归属, 不止看 src=。
  *  - IPv4 + IPv6。
@@ -32,10 +33,8 @@
 #define LEASES_PATH "/tmp/dhcp.leases"
 
 #define TRAF_TICK     2    /* 采样间隔(秒) */
-#define TRAF_WIN      30   /* 速率滑动窗口(秒) */
-#define TRAF_SLOTS    18   /* 环形槽位数 >= WIN/TICK + 3 */
-#define WIFI_EVERY    5    /* 每 N 个 tick 采样一次 iwinfo */
-#define DRV_STALE_MAX 3    /* 驱动计数连续冻结 N 次且 conntrack 有流量 -> 回退 */
+#define TRAF_WIN      10   /* 速率滑动窗口(秒): 硬件计数约 3s 同步一次, 10s 覆盖 3 次 */
+#define TRAF_SLOTS    18   /* 环形槽位数 */
 #define MAX_CLI       512
 #define FLOW_BUCKETS  4096
 #define MAX_LINE      4096
@@ -66,14 +65,21 @@ static int valid_mac(const char *m) {
 static void upper(char *s)
     { for (; *s; s++) *s = toupper((unsigned char)*s); }
 
+/* 安全拷贝 MAC (17 字符 + NUL, 截断保护) */
+static void mac_copy(char *dst, const char *src) {
+    size_t n = strlen(src);
+    if (n >= ML) n = ML - 1;
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+}
+
 static void map_add_v4(uint32_t v4, const char *mac) {
     if (g_map_n >= 1024 || !valid_mac(mac)) return;
     for (int i = 0; i < g_map_n; i++)
         if (!g_map[i].v6 && g_map[i].v4 == v4) return;
     g_map[g_map_n].v6 = 0;
     g_map[g_map_n].v4 = v4;
-    strncpy(g_map[g_map_n].mac, mac, ML - 1);
-    g_map[g_map_n].mac[ML - 1] = '\0';
+    mac_copy(g_map[g_map_n].mac, mac);
     upper(g_map[g_map_n].mac);
     g_map_n++;
 }
@@ -84,8 +90,7 @@ static void map_add_v6(const struct in6_addr *a6, const char *mac) {
         if (g_map[i].v6 && memcmp(&g_map[i].a6, a6, 16) == 0) return;
     g_map[g_map_n].v6 = 1;
     g_map[g_map_n].a6 = *a6;
-    strncpy(g_map[g_map_n].mac, mac, ML - 1);
-    g_map[g_map_n].mac[ML - 1] = '\0';
+    mac_copy(g_map[g_map_n].mac, mac);
     upper(g_map[g_map_n].mac);
     g_map_n++;
 }
@@ -304,14 +309,9 @@ typedef struct {
     uint64_t hwr_hist[TRAF_SLOTS], hwt_hist[TRAF_SLOTS];
     time_t ts_hist[TRAF_SLOTS];
     int head, n;
-    double rx_spd, tx_spd;                 /* 字节/秒, 30s 窗口 */
+    double rx_spd, tx_spd;                 /* 字节/秒, 滑动窗口 */
     uint64_t rx_tot, tx_tot;              /* 累计 (单调) */
     uint64_t hwr_tot, hwt_tot;            /* 累计硬件加速字节 */
-    /* WiFi 驱动计数 */
-    uint64_t drv_rx, drv_tx;
-    int drv_frozen, drv_changing, use_drv;
-    /* conntrack 影子计数 (use_drv=1 时用于检测驱动冻结) */
-    uint64_t ct_up_win, ct_down_win, ct_hwu_win, ct_hwd_win;
 } TrafCli;
 
 static TrafCli g_cli[MAX_CLI];
@@ -323,8 +323,7 @@ static TrafCli *traf_find(const char *mac, int create) {
     if (!create || g_cli_n >= MAX_CLI) return NULL;
     TrafCli *tc = &g_cli[g_cli_n++];
     memset(tc, 0, sizeof *tc);
-    strncpy(tc->mac, mac, ML - 1);
-    tc->mac[ML - 1] = '\0';
+    mac_copy(tc->mac, mac);
     upper(tc->mac);
     /* 回填 IP (map 里第一个命中的) */
     for (int i = 0; i < g_map_n; i++) {
@@ -339,11 +338,6 @@ static TrafCli *traf_find(const char *mac, int create) {
         }
     }
     return tc;
-}
-
-static void traf_reset_ring(TrafCli *tc) {
-    tc->head = 0; tc->n = 0;
-    tc->rx_spd = tc->tx_spd = 0;
 }
 
 /* ─── IP 归属 ──────────────────────────────────────── */
@@ -371,8 +365,7 @@ static int sum_find(MacSum *sums, int *n, const char *mac) {
     for (int i = 0; i < *n; i++)
         if (strcasecmp(sums[i].mac, mac) == 0) return i;
     if (*n >= MAX_CLI) return -1;
-    strncpy(sums[*n].mac, mac, ML - 1);
-    sums[*n].mac[ML - 1] = '\0';
+    mac_copy(sums[*n].mac, mac);
     upper(sums[*n].mac);
     return (*n)++;
 }
@@ -405,13 +398,6 @@ static void sample_conntrack_file(FILE *f) {
         uint64_t up = lan_is_src ? du : dd;    /* 客户端上传 */
         uint64_t down = lan_is_src ? dd : du;  /* 客户端下载 */
 
-        TrafCli *tc = traf_find(mac, 1);
-        if (tc && tc->use_drv) {
-            /* 驱动模式: 只记影子计数用于冻结检测, 不进累计 */
-            tc->ct_up_win += up; tc->ct_down_win += down;
-            if (cf.hw) { tc->ct_hwu_win += up; tc->ct_hwd_win += down; }
-            continue;
-        }
         int si = sum_find(sums, &sums_n, mac);
         if (si < 0) continue;
         sums[si].up += up; sums[si].down += down;
@@ -426,131 +412,6 @@ static void sample_conntrack_file(FILE *f) {
         tc->tx_tot += sums[i].up;
         tc->hwr_tot += sums[i].hwd;
         tc->hwt_tot += sums[i].hwu;
-    }
-}
-
-/* ─── WiFi 驱动采样 (iwinfo per-station) ────────────── */
-
-static char g_aps[32][32];
-static int g_aps_n;
-static int g_drv_ok;   /* 驱动是否上报 per-station 字节 (初始探测结果) */
-
-void traf_set_wifi(const char (*ifnames)[32], int n, int drv_ok) {
-    g_aps_n = 0;
-    if (ifnames) {
-        for (int i = 0; i < n && g_aps_n < 32; i++) {
-            strncpy(g_aps[g_aps_n], ifnames[i], 31);
-            g_aps[g_aps_n][31] = '\0';
-            g_aps_n++;
-        }
-    }
-    g_drv_ok = drv_ok;
-}
-
-/* 在 station 对象范围内找 "tx" -> "bytes": 数字 */
-static uint64_t station_bytes(const char *base, const char *end, const char *dir) {
-    const char *p = strstr(base, dir);
-    if (!p || (end && p >= end)) return 0;
-    p = strstr(p, "\"bytes\"");
-    if (!p || (end && p >= end)) return 0;
-    p = strchr(p, ':');
-    if (!p || (end && p >= end)) return 0;
-    return strtoull(p + 1, NULL, 10);
-}
-
-static void sample_wifi(void) {
-    if (g_aps_n == 0) return;
-    for (int a = 0; a < g_aps_n; a++) {
-        char cmd[160];
-        snprintf(cmd, sizeof cmd,
-                 "ubus call iwinfo assoclist '{\"device\":\"%.31s\"}' 2>/dev/null",
-                 g_aps[a]);
-        FILE *f = popen(cmd, "r");
-        if (!f) continue;
-
-        /* 读全输出 (动态缓冲) */
-        size_t cap = 65536, len = 0;
-        char *buf = malloc(cap);
-        if (!buf) { pclose(f); continue; }
-        size_t r;
-        while ((r = fread(buf + len, 1, cap - len - 1, f)) > 0) {
-            len += r;
-            if (len + 1 >= cap) {
-                cap *= 2;
-                char *nb = realloc(buf, cap);
-                if (!nb) break;
-                buf = nb;
-            }
-        }
-        pclose(f);
-        buf[len] = '\0';
-
-        const char *p = buf;
-        while ((p = strstr(p, "\"mac\"")) != NULL) {
-            const char *vend = strstr(p + 5, "\"mac\""); /* 下一个 station 的边界 */
-            char mac[ML] = "";
-            const char *q = strchr(p, ':');
-            if (q) {
-                q++;
-                while (*q && isspace((unsigned char)*q)) q++;
-                if (*q == '"' && strlen(q + 1) >= 17) {
-                    memcpy(mac, q + 1, 17); mac[17] = '\0';
-                }
-            }
-            if (valid_mac(mac)) {
-                /* iwinfo: tx = AP 发出 = 客户端下行(rx); rx = AP 收到 = 客户端上行(tx) */
-                uint64_t ap_tx = station_bytes(p, vend, "\"tx\"");
-                uint64_t ap_rx = station_bytes(p, vend, "\"rx\"");
-                uint64_t c_rx = ap_tx, c_tx = ap_rx;
-
-                TrafCli *tc = traf_find(mac, 1);
-                if (tc) {
-                    if (!tc->use_drv) {
-                        /* 驱动模式未启用: 观察计数器是否在走, 连续 2 次变化则切入 */
-                        if (c_rx != tc->drv_rx || c_tx != tc->drv_tx)
-                            tc->drv_changing++;
-                        else
-                            tc->drv_changing = 0;
-                        tc->drv_rx = c_rx; tc->drv_tx = c_tx;
-                        if (g_drv_ok && tc->drv_changing >= 2) {
-                            tc->use_drv = 1;
-                            tc->drv_frozen = 0;
-                            traf_reset_ring(tc);
-                        }
-                    } else {
-                        if (c_rx < tc->drv_rx || c_tx < tc->drv_tx) {
-                            /* 重关联: 驱动计数器重置 */
-                            traf_reset_ring(tc);
-                            tc->drv_rx = c_rx; tc->drv_tx = c_tx;
-                            tc->drv_frozen = 0;
-                        } else if (c_rx == tc->drv_rx && c_tx == tc->drv_tx) {
-                            tc->drv_frozen++;
-                            if (tc->drv_frozen >= DRV_STALE_MAX &&
-                                (tc->ct_up_win + tc->ct_down_win) > 0) {
-                                /* 驱动冻结 (WED 等) 但 conntrack 有流量 -> 回退 */
-                                tc->rx_tot += tc->ct_down_win;
-                                tc->tx_tot += tc->ct_up_win;
-                                tc->hwr_tot += tc->ct_hwd_win;
-                                tc->hwt_tot += tc->ct_hwu_win;
-                                tc->use_drv = 0;
-                                tc->drv_changing = 0;
-                                traf_reset_ring(tc);
-                            }
-                        } else {
-                            tc->rx_tot += c_rx - tc->drv_rx;
-                            tc->tx_tot += c_tx - tc->drv_tx;
-                            tc->drv_rx = c_rx; tc->drv_tx = c_tx;
-                            tc->drv_frozen = 0;
-                        }
-                    }
-                    tc->ct_up_win = tc->ct_down_win = 0;
-                    tc->ct_hwu_win = tc->ct_hwd_win = 0;
-                }
-            }
-            p = vend ? vend : p + 5;
-            if (!vend) break;
-        }
-        free(buf);
     }
 }
 
@@ -634,18 +495,13 @@ void traf_init(const char *lan_iface) {
 }
 
 void traf_tick(void) {
-    static int tick = 0;
     time_t now = time(NULL);
-    tick++;
 
     FILE *f = fopen(CT_PATH, "r");
     if (f) {
         sample_conntrack_file(f);
         fclose(f);
     }
-
-    if (g_aps_n > 0 && tick % WIFI_EVERY == 0)
-        sample_wifi();
 
     for (int i = 0; i < g_cli_n; i++)
         push_sample(&g_cli[i], now);
