@@ -1,14 +1,15 @@
 /*
- * traffic.h — MTK 硬件加速感知的流量统计引擎
+ * traffic.h — 流量统计引擎 (nftables 命名计数器 + conntrack HW 补充)
  *
  * 设计要点:
- *  1. 主数据源为 iptables mangle 表的每 IP 计数器 (wrtbwmon 原理):
- *     每个 LAN IP 建 -s/-d 两条 RETURN 规则挂在 FORWARD 链下,
- *     每秒 iptables -Z 原子读出精确增量, 无需 per-flow 基线管理,
- *     不受 conntrack 同步抖动影响; IP->MAC 经 ARP 表归属。
+ *  1. 主数据源为 nftables 命名计数器: 表 inet cs_traffic, base chain
+ *     直接挂 forward hook (priority -5, 不碰 firewall4)。
+ *     每个 LAN IP 建两条规则: ip saddr (上传) / ip daddr (下载),
+ *     每条带独立命名 counter。每秒 nft --json 读出精确增量并重置,
+ *     无需 per-flow 基线管理; IP->MAC 经 ARP 表归属。
  *  2. 补充数据源为 conntrack [HW_OFFLOAD] 流: 走 PPE 硬件的包
- *     不经过 netfilter, iptables 看不到, 用 per-flow 基线跟踪
- *     内核同步回来的硬件增量, 与 iptables 互补不重叠。
+ *     不经过 netfilter, nft 看不到, 用 per-flow 基线跟踪
+ *     内核同步回来的硬件增量, 与 nft 互补不重叠。
  *     (需 net.netfilter.nf_conntrack_acct=1, daemon 启动时自动尝试开启)
  *  3. 实时速率用 8 秒滑动窗口计算, 连续 6 秒无变化直接判停。
  *  4. 本版本无 WiFi: 不依赖 iwinfo。

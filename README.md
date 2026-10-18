@@ -15,14 +15,17 @@ ACL 控制：在界面上直接拦截/放行客户端
 
 显示客户端实时网速，基于wifi流量及连接的流量统计，不是专业的测速，不保证绝对准确性，只做参考。
 
-流量统计引擎（v1.1.0 重写，wrtbwmon 原理 + MTK 硬件加速补充，无 WiFi 版）：
-- 主数据源为 iptables mangle 表的每 IP 计数器：每个 LAN IP 在 FORWARD 链下建
-  -s（上传）/-d（下载）两条规则，每秒 `iptables -Z` 原子读出精确增量，
-  按 IP→MAC（ARP 表）归属到设备。无需 per-flow 基线，不受 conntrack 同步抖动影响；
-- 走 PPE 硬件加速的包不经过 netfilter、iptables 看不到，单独用 conntrack
+流量统计引擎（v1.1.0，nftables 命名计数器 + MTK 硬件加速补充，无 WiFi 版）：
+- 主数据源为 nftables：表 inet cs_traffic，base chain 直接挂 forward hook
+  （priority -5，不碰 firewall4）。每个 LAN IP 建两条规则
+  （ip saddr 记上传 / ip daddr 记下载），每条带独立命名 counter；
+  每秒 `nft --json` 读出精确增量并重置，JSON 解析可靠，无需 per-flow 基线，
+  不受 conntrack 同步抖动影响；IP→MAC 经 ARP 表归属；
+  （wrtbwmon 原理的原生 nft 实现，不再经 iptables-nft 转译）
+- 走 PPE 硬件加速的包不经过 netfilter、nft 看不到，单独用 conntrack
   [HW_OFFLOAD] 流的 per-flow 基线跟踪硬件增量，两者互补不重叠
   （需 net.netfilter.nf_conntrack_acct=1，daemon 启动时自动尝试开启，
-  并自动建链 / 同步规则）；
+  并自动建表 / 按 ARP 增量同步规则）；
 - daemon 每 1 秒采样，实时速率按 8 秒滑动窗口计算，连续 6 秒无变化直接判停；
 - 每个客户端单独累计硬件加速字节（/tmp/clientstatus.traffic 的 HW_RX/HW_TX 列）。
 
