@@ -32,6 +32,7 @@ return view.extend({
 		var sortA = true;
 		var mtime = -1;
 		var timers = [];
+		var isEditing = false;
 
 		var css = document.createElement('style');
 		css.textContent = '.cs{--surface:#fff;--text:#171717;--text2:#6b7280;--text3:#9ca3af;--line:#f1f2f4;--line2:#e5e7eb;--accent:#2563eb;--green:#16a34a;--red:#dc2626;--radius:10px;width:100%;color:var(--text);font-size:14px}'
@@ -163,6 +164,7 @@ return view.extend({
 		wrap.appendChild(root);
 
 		function renderRows() {
+			if (isEditing) return;
 			var q = (wrap.querySelector('#cs-q') || {}).value || '';
 			var f = (wrap.querySelector('#cs-f') || {}).value || 'all';
 			var a = (wrap.querySelector('#cs-a') || {}).value || 'all';
@@ -260,6 +262,7 @@ return view.extend({
 			}
 			var nm = e.target.closest ? e.target.closest('.cs-name') : null;
 			if (nm && !nm.querySelector('input')) {
+				isEditing = true;
 				var mac = nm.getAttribute('data-mac'), cur = nm.getAttribute('data-nm');
 				var inp = document.createElement('input');
 				inp.className = 'cs-edit'; inp.value = cur; inp.maxLength = 64;
@@ -267,6 +270,7 @@ return view.extend({
 				var done = false;
 				function fin(ok) {
 					if (done) return; done = true;
+					isEditing = false;
 					if (ok && inp.value.trim() !== cur) {
 						apiPost('admin/services/clientstatus/save_hostname', { mac: mac, hostname: inp.value.trim() }).then(function() {
 							apiGet('admin/services/clientstatus/data').then(function(d) {
