@@ -316,25 +316,14 @@ function action_debug()
 	else
 		out.traffic = "(no file)"
 	end
-	-- conntrack HW 流数量和总 bytes
-	local hw_flows = 0
-	local hw_bytes = 0
-	f = io.open("/proc/net/nf_conntrack", "r")
-	if f then
-		for line in f:lines() do
-			if line:find("%[HW_OFFLOAD%]", 1, true) then
-				hw_flows = hw_flows + 1
-				for b in line:gmatch("bytes=(%d+)") do
-					hw_bytes = hw_bytes + tonumber(b)
-				end
-			end
-		end
-		f:close()
+	-- iptables 规则
+	local h = io.popen("iptables -t mangle -nvL RRDIPT_FORWARD 2>&1 | head -20")
+	if h then
+		out.iptables = h:read("*a")
+		h:close()
 	else
-		out.ct_error = "cannot open /proc/net/nf_conntrack"
+		out.iptables = "(failed)"
 	end
-	out.hw_flows = hw_flows
-	out.hw_bytes_total = hw_bytes
 	-- daemon 是否在跑
 	local pidf = io.open("/tmp/clientstatus.pid", "r")
 	if pidf then
