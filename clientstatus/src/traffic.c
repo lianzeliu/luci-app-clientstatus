@@ -26,6 +26,9 @@
 #include <arpa/inet.h>
 #include "traffic.h"
 
+/* 前向声明 */
+static void ipt_sync(void);
+
 #define ML 18
 #define TRAF_FILE   "/tmp/clientstatus.traffic"
 #define CT_PATH     "/proc/net/nf_conntrack"
@@ -205,6 +208,34 @@ void traf_rebuild_map(void) {
     ipt_sync();
 }
 
+/* ─── 客户端累计 ─────────────────────────────────── */
+
+typedef struct {
+    char mac[ML];
+    char ip[64];
+    uint64_t rx_hist[TRAF_SLOTS], tx_hist[TRAF_SLOTS];
+    time_t ts_hist[TRAF_SLOTS];
+    int head, n;
+    double rx_spd, tx_spd;
+    uint64_t rx_tot, tx_tot;
+    uint64_t hwr_tot, hwt_tot;  /* 硬件累计 (兼容, 未用) */
+    uint64_t prev_tot;
+    int flat_ticks;
+} TrafCli;
+
+static TrafCli g_cli[MAX_CLI];
+static int g_cli_n;
+
+static TrafCli *traf_find(const char *mac, int create) {
+    for (int i = 0; i < g_cli_n; i++)
+        if (strcasecmp(g_cli[i].mac, mac) == 0) return &g_cli[i];
+    if (!create || g_cli_n >= MAX_CLI) return NULL;
+    TrafCli *tc = &g_cli[g_cli_n++];
+    memset(tc, 0, sizeof *tc);
+    mac_copy(tc->mac, mac);
+    return tc;
+}
+
 /* ─── iptables 计数器 (wrtbwmon 方式: RRDIPT_FORWARD + -Z) ─── */
 
 /* 规则映射: ip -> (mac, 方向) */
@@ -357,7 +388,7 @@ static void ipt_sample(void) {
                 delta = bytes;  /* 被清零过, 直接用 */
             r->last_bytes = bytes;
             if (delta == 0) continue;
-            TrafCli *tc = cli_find_or_add(r->mac, ip_clean);
+            TrafCli *tc = traf_find(r->mac, 1);
             if (!tc) continue;
             if (is_up) tc->tx_hist[tc->head] += delta;
             else tc->rx_hist[tc->head] += delta;
