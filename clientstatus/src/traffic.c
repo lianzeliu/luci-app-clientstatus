@@ -3,7 +3,7 @@
  *
  * 主数据源: nftables 命名计数器。
  *   - 表 inet cs_traffic, base chain 直接挂 forward hook
- *     (priority -5, 不碰 firewall4)。
+ *     (priority -151, 在 mangle 之前, 与 iptables-nft 一致)。
  *   - 每个 LAN IP 建两条规则: ip saddr (上传) / ip daddr (下载),
  *     每条带独立命名 counter (u_v4_N / d_v4_N)。
  *   - 每秒 nft --json 读出精确增量并重置, 无需 per-flow 基线管理,
@@ -242,7 +242,7 @@ static int nft_ensure(void) {
              "nft delete table inet %s 2>/dev/null; "
              "nft add table inet %s 2>/dev/null && "
              "nft add chain inet %s %s "
-             "'{ type filter hook forward priority -5; policy accept; }' 2>/dev/null",
+             "'{ type filter hook forward priority -151; policy accept; }' 2>/dev/null",
              NFT_TABLE, NFT_TABLE, NFT_TABLE, NFT_CHAIN);
     run(cmd);
     snprintf(cmd, sizeof cmd,
