@@ -720,6 +720,23 @@ void traf_init(const char *lan_iface) {
         }
         if (f) fclose(f);
     }
+    /* 检查 firewall4 flowtable 是否带 counter (HW 流量同步需要) */
+    {
+        FILE *pf = popen("nft list flowtables 2>/dev/null", "r");
+        int has_ctr = 0;
+        if (pf) {
+            char lb[512];
+            while (fgets(lb, sizeof lb, pf))
+                if (strstr(lb, "counter")) { has_ctr = 1; break; }
+            pclose(pf);
+        }
+        /* 结果写入状态文件供诊断, 不阻断运行 */
+        FILE *sf = fopen("/tmp/clientstatus.flowtable", "w");
+        if (sf) {
+            fprintf(sf, "flowtable_counter=%d\n", has_ctr);
+            fclose(sf);
+        }
+    }
     /* 建表建链 (nft_ensure 内已 delete 重建, 无残留) */
     nft_ensure();
     g_nft_n = 0;
