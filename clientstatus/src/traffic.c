@@ -230,12 +230,17 @@ static IptRule *ipt_find(const char *ip, int is_up, int v6) {
 static int ipt_ensure(void) {
     /* 清理 nft 残留 */
     run("nft delete table inet cs_traffic 2>/dev/null");
+    /* 彻底清理旧的 RRDIPT_FORWARD (防残留规则) */
+    run("iptables -t mangle -D FORWARD -j RRDIPT_FORWARD 2>/dev/null; "
+        "iptables -t mangle -F RRDIPT_FORWARD 2>/dev/null; "
+        "iptables -t mangle -X RRDIPT_FORWARD 2>/dev/null; "
+        "ip6tables -t mangle -D FORWARD -j RRDIPT_FORWARD 2>/dev/null; "
+        "ip6tables -t mangle -F RRDIPT_FORWARD 2>/dev/null; "
+        "ip6tables -t mangle -X RRDIPT_FORWARD 2>/dev/null");
     /* 建链 */
     run("iptables -t mangle -N RRDIPT_FORWARD 2>/dev/null; "
-        "iptables -t mangle -C FORWARD -j RRDIPT_FORWARD 2>/dev/null || "
         "iptables -t mangle -I FORWARD -j RRDIPT_FORWARD 2>/dev/null");
     run("ip6tables -t mangle -N RRDIPT_FORWARD 2>/dev/null; "
-        "ip6tables -t mangle -C FORWARD -j RRDIPT_FORWARD 2>/dev/null || "
         "ip6tables -t mangle -I FORWARD -j RRDIPT_FORWARD 2>/dev/null");
     return 1;
 }

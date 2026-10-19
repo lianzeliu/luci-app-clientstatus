@@ -823,5 +823,12 @@ int main(void) {
     }
 
     unlink(PID_FILE);
+    /* 退出时清理防火墙规则, 不留残留 */
+    system("iptables -t mangle -D FORWARD -j RRDIPT_FORWARD 2>/dev/null; "
+           "iptables -t mangle -F RRDIPT_FORWARD 2>/dev/null; "
+           "iptables -t mangle -X RRDIPT_FORWARD 2>/dev/null; "
+           "ip6tables -t mangle -D FORWARD -j RRDIPT_FORWARD 2>/dev/null; "
+           "ip6tables -t mangle -F RRDIPT_FORWARD 2>/dev/null; "
+           "ip6tables -t mangle -X RRDIPT_FORWARD 2>/dev/null");
     return 0;
 }
