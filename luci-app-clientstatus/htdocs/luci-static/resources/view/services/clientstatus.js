@@ -3,14 +3,29 @@
 
 return view.extend({
 	load: function() {
-		return fetch(L.url('admin/services/clientstatus/data'), { credentials: 'same-origin' })
-			.then(function(r) { return r.json(); });
+		var url = L.url('admin/services/clientstatus/data');
+		return fetch(url, { credentials: 'same-origin' })
+			.then(function(r) {
+				if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + url);
+				return r.json();
+			})
+			.then(function(j) { return { ok: true, data: j, url: url }; })
+			.catch(function(e) { return { ok: false, error: String(e), url: url }; });
 	},
 
-	render: function(data) {
+	render: function(ld) {
 		var clients = [];
-		if (data && data.clients) {
-			clients = Array.isArray(data.clients) ? data.clients : Object.values(data.clients);
+		var loadErr = null;
+		var dataUrl = '';
+		if (ld && ld.ok) {
+			dataUrl = ld.url || '';
+			var data = ld.data;
+			if (data && data.clients) {
+				clients = Array.isArray(data.clients) ? data.clients : Object.values(data.clients);
+			}
+		} else if (ld) {
+			loadErr = ld.error || 'unknown';
+			dataUrl = ld.url || '';
 		}
 		var speeds = {};
 		var sortK = 'status';
@@ -19,7 +34,7 @@ return view.extend({
 		var timers = [];
 
 		var css = document.createElement('style');
-		css.textContent = '.cs{--surface:#fff;--text:#171717;--text2:#6b7280;--text3:#9ca3af;--line:#f1f2f4;--line2:#e5e7eb;--accent:#2563eb;--green:#16a34a;--red:#dc2626;--radius:10px;max-width:1100px;margin:0 auto;color:var(--text);font-size:14px}'
+		css.textContent = '.cs{--surface:#fff;--text:#171717;--text2:#6b7280;--text3:#9ca3af;--line:#f1f2f4;--line2:#e5e7eb;--accent:#2563eb;--green:#16a34a;--red:#dc2626;--radius:10px;width:100%;color:var(--text);font-size:14px}'
 			+ 'html[data-theme="dark"] .cs{--surface:#17181c;--text:#e8e9ec;--text2:#9aa0aa;--text3:#6b7280;--line:#232529;--line2:#2e3138;--accent:#5b9cf8;--green:#4ade80;--red:#f87171}'
 			+ '.cs-top{display:flex;justify-content:space-between;align-items:flex-end;padding:6px 2px 18px;gap:16px;flex-wrap:wrap}'
 			+ '.cs-title h2{margin:0;font-size:20px;font-weight:650}'
@@ -115,6 +130,8 @@ return view.extend({
 		var root = document.createElement('div');
 		root.className = 'cs';
 		root.innerHTML =
+			(loadErr ? '<div style="background:#fee;border:1px solid #f00;padding:10px;border-radius:8px;margin-bottom:12px;font-size:12px;word-break:break-all">'
+				+ '数据加载失败: ' + esc(loadErr) + '<br>URL: ' + esc(dataUrl) + '</div>' : '') +
 			'<div class="cs-top"><div class="cs-title"><h2>' + _('Client Status') + '</h2>' +
 			'<p id="cs-summary"></p></div>' +
 			'<div class="cs-wan"><div class="cs-wan-label">WAN ' + _('Realtime') + '</div>' +
