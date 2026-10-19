@@ -752,9 +752,9 @@ void traf_tick(void) {
     time_t now = time(NULL);
     tick++;
 
-    nft_sample();   /* nft 命名计数器增量, 主数据源 */
-    /* hw_sample() 已禁用: 如确认硬加速生效且 nft 看不到流量, 再打开 */
-    /* hw_sample();    /\* conntrack [HW_OFFLOAD] 增量, 硬件补充 *\/ */
+    /* nft 已禁用: 全部流量走 PPE, 软件计数器看不到 */
+    /* nft_sample();   /\* nft 命名计数器增量, 主数据源 *\/ */
+    hw_sample();    /* conntrack [HW_OFFLOAD] 增量, 硬件加速流量 */
 
     if (tick % NFT_SYNC_EVERY == 0)
         traf_rebuild_map();  /* 刷新映射 + 同步规则 */
