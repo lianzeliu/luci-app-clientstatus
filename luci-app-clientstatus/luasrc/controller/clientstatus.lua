@@ -136,6 +136,8 @@ function action_speed()
 						result[mac] = {
 							rx = tonumber(p[3]) or 0,
 							tx = tonumber(p[4]) or 0,
+							rx_tot = tonumber(p[5]) or 0,
+							tx_tot = tonumber(p[6]) or 0,
 						}
 					end
 				end
@@ -147,7 +149,7 @@ function action_speed()
 	-- 3. 在线但暂无数据的客户端补 0 (daemon 刚启动 / 新上线)
 	for mac in pairs(online) do
 		if not result[mac] then
-			result[mac] = { rx = 0, tx = 0 }
+			result[mac] = { rx = 0, tx = 0, rx_tot = 0, tx_tot = 0 }
 		end
 	end
 

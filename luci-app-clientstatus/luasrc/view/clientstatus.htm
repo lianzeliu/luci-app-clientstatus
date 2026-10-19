@@ -78,6 +78,8 @@
   font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .cs-spd.dn { color: var(--green); } .cs-spd.up { color: var(--accent); }
 .cs-spd.zero { color: var(--text3); }
+.cs-tot { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 11px; color: var(--text3); margin-top: 2px; font-variant-numeric: tabular-nums; }
 .cs-acl { font-size: 12.5px; padding: 5px 12px; border-radius: 20px; cursor: pointer;
   border: 1px solid transparent; transition: all .15s; white-space: nowrap; }
 .cs-acl.allow { color: var(--green); background: rgba(22,163,74,.08); }
@@ -199,6 +201,11 @@ function fmt(b){if(!b||b<=0)return '–';
   if(b<1048576)return (b/1024).toFixed(1)+' KB/s';
   if(b<1073741824)return (b/1048576).toFixed(1)+' MB/s';
   return (b/1073741824).toFixed(2)+' GB/s';}
+function fmtTot(b){if(!b||b<=0)return '–';
+  if(b<1024)return b+' B';
+  if(b<1048576)return (b/1024).toFixed(1)+' KB';
+  if(b<1073741824)return (b/1048576).toFixed(1)+' MB';
+  return (b/1073741824).toFixed(2)+' GB';}
 function fmtDur(s){var m=s.match(/(\d+)d/);var d=m?+m[1]:0;m=s.match(/(\d+)h/);var h=m?+m[1]:0;
   m=s.match(/(\d+)m/);var mi=m?+m[1]:0;m=s.match(/(\d+)s/);var se=m?+m[1]:0;
   return d*86400+h*3600+mi*60+se;}
@@ -230,8 +237,10 @@ function render(){
       +'<td><span class="cs-name" data-mac="'+escA(c.mac)+'" data-nm="'+escA(c.hostname)+'" title="<%:Click to edit%>">'+esc(c.hostname)+'</span>'
       +'<div class="cs-mac">'+esc(c.mac)+'</div></td>'
       +'<td class="cs-ip">'+(c.status==='online'?esc(c.ipv4||'–'):'–')+'</td>'
-      +'<td class="cs-spd dn'+(sp.rx?'':' zero')+'">'+fmt(sp.rx)+'</td>'
-      +'<td class="cs-spd up'+(sp.tx?'':' zero')+'">'+fmt(sp.tx)+'</td>'
+      +'<td><div class="cs-spd dn'+(sp.rx?'':' zero')+'">'+fmt(sp.rx)+'</div>'
+      +'<div class="cs-tot">'+fmtTot(sp.rx_tot)+'</div></td>'
+      +'<td><div class="cs-spd up'+(sp.tx?'':' zero')+'">'+fmt(sp.tx)+'</div>'
+      +'<div class="cs-tot">'+fmtTot(sp.tx_tot)+'</div></td>'
       +'<td class="cs-dur">'+esc(c.duration||'–')+'</td>'
       +'<td><button class="cs-acl '+(blk?'block':'allow')+'" data-mac="'+escA(c.mac)+'">'
       +(blk?'<%:Blocked%>':'<%:Allowed%>')+'</button></td></tr>';
