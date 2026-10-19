@@ -1,11 +1,10 @@
 'use strict';
 'require view';
-'require xhr';
-'require poll';
 
 return view.extend({
 	load: function() {
-		return xhr.getJSON(L.url('admin/services/clientstatus/data'));
+		return fetch(L.url('admin/services/clientstatus/data'), { credentials: 'same-origin' })
+			.then(function(r) { return r.json(); });
 	},
 
 	render: function(data) {
@@ -14,7 +13,7 @@ return view.extend({
 		var sortK = 'status';
 		var sortA = true;
 		var mtime = -1;
-		var self = this;
+		var timers = [];
 
 		var css = document.createElement('style');
 		css.textContent = '.cs{--surface:#fff;--text:#171717;--text2:#6b7280;--text3:#9ca3af;--line:#f1f2f4;--line2:#e5e7eb;--accent:#2563eb;--green:#16a34a;--red:#dc2626;--radius:10px;max-width:1100px;margin:0 auto;color:var(--text);font-size:14px}'
@@ -57,34 +56,21 @@ return view.extend({
 			+ '.cs-edit{padding:4px 8px;border:1px solid var(--accent);border-radius:6px;font-size:13px;outline:none;background:var(--surface);color:var(--text);width:170px}'
 			+ '@media(max-width:760px){.cs-card{overflow-x:auto}.cs-table{min-width:640px}.cs-bar .cs-sp{display:none}}';
 
-		var root = document.createElement('div');
-		root.className = 'cs';
-		root.innerHTML =
-			'<div class="cs-top"><div class="cs-title"><h2>' + _('Client Status') + '</h2>' +
-			'<p id="cs-summary"></p></div>' +
-			'<div class="cs-wan"><div class="cs-wan-label">WAN ' + _('Realtime') + '</div>' +
-			'<div class="cs-wan-nums"><span class="cs-wan-down">↓ <span id="cs-wan-dn">–</span></span>' +
-			'<span class="cs-wan-up">↑ <span id="cs-wan-up">–</span></span></div></div></div>' +
-			'<div class="cs-bar"><input class="cs-search" id="cs-q" placeholder="' + _('Search hostname / IP / MAC') + '">' +
-			'<select class="cs-sel" id="cs-f"><option value="all">' + _('All') + '</option>' +
-			'<option value="online">' + _('Online') + '</option><option value="offline">' + _('Offline') + '</option></select>' +
-			'<select class="cs-sel" id="cs-a"><option value="all">ACL: ' + _('All') + '</option>' +
-			'<option value="Allowed">' + _('Allowed') + '</option><option value="Blocked">' + _('Blocked') + '</option></select>' +
-			'<span class="cs-sp"></span>' +
-			'<button class="cs-btn" id="cs-resetbtn">' + _('Reset') + '</button>' +
-			'<button class="cs-btn primary" id="cs-refreshbtn">' + _('Refresh') + '</button></div>' +
-			'<div class="cs-card"><table class="cs-table"><thead><tr>' +
-			'<th data-k="status">' + _('Status') + '</th><th data-k="hostname">' + _('Hostname') + '</th>' +
-			'<th data-k="ipv4">' + _('IP') + '</th><th data-k="rx">↓</th><th data-k="tx">↑</th>' +
-			'<th data-k="duration">' + _('Duration') + '</th><th data-k="acl">ACL</th>' +
-			'</tr></thead><tbody id="cs-rows"></tbody></table>' +
-			'<div class="cs-empty" id="cs-empty" style="display:none">' + _('No clients found') + '</div></div>' +
-			'<div class="cs-foot"><span id="cs-updated"></span><span>' + _('Auto refresh') + '</span></div>';
-
-		var wrap = document.createElement('div');
-		wrap.appendChild(css);
-		wrap.appendChild(root);
-
+		function apiGet(path) {
+			return fetch(L.url(path) + '?_=' + Date.now(), { credentials: 'same-origin' })
+				.then(function(r) { return r.json(); });
+		}
+		function apiPost(path, params) {
+			var body = 'token=' + encodeURIComponent(L.env.token);
+			for (var k in params)
+				body += '&' + encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+			return fetch(L.url(path), {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+				body: body
+			}).then(function(r) { return r.json(); });
+		}
 		function fmt(b) {
 			if (!b || b <= 0) return '–';
 			if (b < 1024) return b + ' B/s';
@@ -123,13 +109,39 @@ return view.extend({
 			return '';
 		}
 
+		var root = document.createElement('div');
+		root.className = 'cs';
+		root.innerHTML =
+			'<div class="cs-top"><div class="cs-title"><h2>' + _('Client Status') + '</h2>' +
+			'<p id="cs-summary"></p></div>' +
+			'<div class="cs-wan"><div class="cs-wan-label">WAN ' + _('Realtime') + '</div>' +
+			'<div class="cs-wan-nums"><span class="cs-wan-down">↓ <span id="cs-wan-dn">–</span></span>' +
+			'<span class="cs-wan-up">↑ <span id="cs-wan-up">–</span></span></div></div></div>' +
+			'<div class="cs-bar"><input class="cs-search" id="cs-q" placeholder="' + _('Search hostname / IP / MAC') + '">' +
+			'<select class="cs-sel" id="cs-f"><option value="all">' + _('All') + '</option>' +
+			'<option value="online">' + _('Online') + '</option><option value="offline">' + _('Offline') + '</option></select>' +
+			'<select class="cs-sel" id="cs-a"><option value="all">ACL: ' + _('All') + '</option>' +
+			'<option value="Allowed">' + _('Allowed') + '</option><option value="Blocked">' + _('Blocked') + '</option></select>' +
+			'<span class="cs-sp"></span>' +
+			'<button class="cs-btn" id="cs-resetbtn">' + _('Reset') + '</button>' +
+			'<button class="cs-btn primary" id="cs-refreshbtn">' + _('Refresh') + '</button></div>' +
+			'<div class="cs-card"><table class="cs-table"><thead><tr>' +
+			'<th data-k="status">' + _('Status') + '</th><th data-k="hostname">' + _('Hostname') + '</th>' +
+			'<th data-k="ipv4">' + _('IP') + '</th><th data-k="rx">↓</th><th data-k="tx">↑</th>' +
+			'<th data-k="duration">' + _('Duration') + '</th><th data-k="acl">ACL</th>' +
+			'</tr></thead><tbody id="cs-rows"></tbody></table>' +
+			'<div class="cs-empty" id="cs-empty" style="display:none">' + _('No clients found') + '</div></div>' +
+			'<div class="cs-foot"><span id="cs-updated"></span><span>' + _('Auto refresh') + '</span></div>';
+
+		var wrap = document.createElement('div');
+		wrap.appendChild(css);
+		wrap.appendChild(root);
+
 		function renderRows() {
-			var qEl = wrap.querySelector('#cs-q');
-			var fEl = wrap.querySelector('#cs-f');
-			var aEl = wrap.querySelector('#cs-a');
-			var q = qEl ? qEl.value.toLowerCase() : '';
-			var f = fEl ? fEl.value : 'all';
-			var a = aEl ? aEl.value : 'all';
+			var q = (wrap.querySelector('#cs-q') || {}).value || '';
+			var f = (wrap.querySelector('#cs-f') || {}).value || 'all';
+			var a = (wrap.querySelector('#cs-a') || {}).value || 'all';
+			q = q.toLowerCase();
 			var tbody = wrap.querySelector('#cs-rows');
 			if (!tbody) return;
 
@@ -174,6 +186,11 @@ return view.extend({
 			wrap.querySelector('#cs-updated').textContent = _('Updated') + ' ' + new Date().toTimeString().slice(0, 8);
 		}
 
+		function onUnload() {
+			for (var i = 0; i < timers.length; i++) clearInterval(timers[i]);
+			timers = [];
+		}
+
 		wrap.querySelector('#cs-q').addEventListener('input', renderRows);
 		wrap.querySelector('#cs-f').addEventListener('change', renderRows);
 		wrap.querySelector('#cs-a').addEventListener('change', renderRows);
@@ -191,32 +208,32 @@ return view.extend({
 		}
 
 		wrap.querySelector('#cs-refreshbtn').addEventListener('click', function() {
-			xhr.getJSON(L.url('admin/services/clientstatus/data')).then(function(d) {
+			apiGet('admin/services/clientstatus/data').then(function(d) {
 				if (d && d.clients) { clients = d.clients; renderRows(); }
 			});
 		});
 
 		wrap.querySelector('#cs-resetbtn').addEventListener('click', function() {
-			xhr.post(L.url('admin/services/clientstatus/reset'), { token: L.env.token }).then(function(r) {
+			apiPost('admin/services/clientstatus/reset', {}).then(function(r) {
 				if (r && r.ok) { speeds = {}; renderRows(); }
 			});
 		});
 
 		wrap.querySelector('#cs-rows').addEventListener('click', function(e) {
-			var b = e.target.closest('.cs-acl');
+			var b = e.target.closest ? e.target.closest('.cs-acl') : null;
 			if (b) {
 				b.disabled = true;
-				xhr.post(L.url('admin/services/clientstatus/toggle_acl'), { token: L.env.token, mac: b.getAttribute('data-mac') }).then(function(r) {
+				apiPost('admin/services/clientstatus/toggle_acl', { mac: b.getAttribute('data-mac') }).then(function(r) {
 					b.disabled = false;
 					if (r && r.ok) {
-						xhr.getJSON(L.url('admin/services/clientstatus/data')).then(function(d) {
+						apiGet('admin/services/clientstatus/data').then(function(d) {
 							if (d && d.clients) { clients = d.clients; renderRows(); }
 						});
 					}
 				});
 				return;
 			}
-			var nm = e.target.closest('.cs-name');
+			var nm = e.target.closest ? e.target.closest('.cs-name') : null;
 			if (nm && !nm.querySelector('input')) {
 				var mac = nm.getAttribute('data-mac'), cur = nm.getAttribute('data-nm');
 				var inp = document.createElement('input');
@@ -226,8 +243,8 @@ return view.extend({
 				function fin(ok) {
 					if (done) return; done = true;
 					if (ok && inp.value.trim() !== cur) {
-						xhr.post(L.url('admin/services/clientstatus/save_hostname'), { token: L.env.token, mac: mac, hostname: inp.value.trim() }).then(function() {
-							xhr.getJSON(L.url('admin/services/clientstatus/data')).then(function(d) {
+						apiPost('admin/services/clientstatus/save_hostname', { mac: mac, hostname: inp.value.trim() }).then(function() {
+							apiGet('admin/services/clientstatus/data').then(function(d) {
 								if (d && d.clients) { clients = d.clients; renderRows(); }
 							});
 						});
@@ -243,23 +260,27 @@ return view.extend({
 
 		renderRows();
 
-		poll.add(function() {
-			return xhr.getJSON(L.url('admin/services/clientstatus/speed') + '?_=' + Date.now()).then(function(res) {
+		timers.push(setInterval(function() {
+			apiGet('admin/services/clientstatus/speed').then(function(res) {
 				if (res && res.clients) { speeds = res.clients; renderRows(); }
 			});
-		}, 2);
+		}, 2000));
 
-		poll.add(function() {
-			return xhr.getJSON(L.url('admin/services/clientstatus/mtime') + '?_=' + Date.now()).then(function(res) {
+		timers.push(setInterval(function() {
+			apiGet('admin/services/clientstatus/mtime').then(function(res) {
 				if (res && res.mtime !== undefined && (mtime < 0 || res.mtime !== mtime)) {
 					mtime = res.mtime;
-					return xhr.getJSON(L.url('admin/services/clientstatus/data')).then(function(d) {
+					apiGet('admin/services/clientstatus/data').then(function(d) {
 						if (d && d.clients) { clients = d.clients; renderRows(); }
 					});
 				}
 			});
-		}, 30);
+		}, 30000));
+
+		this.onUnload = onUnload;
 
 		return wrap;
-	}
+	},
+
+	onUnload: function() {}
 });
