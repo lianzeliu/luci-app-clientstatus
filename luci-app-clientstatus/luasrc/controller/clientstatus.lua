@@ -10,11 +10,11 @@ function index()
 	      _("Client Management"), 60)
 
 	entry({"admin", "services", "clientstatus", "status"},
-	      template("clientstatus"),
+	      view("services/clientstatus"),
 	      _("Status"), 1)
 
 	entry({"admin", "services", "clientstatus", "settings"},
-	      cbi("clientstatus/settings"),
+	      view("services/clientstatus_settings"),
 	      _("Settings"), 2)
 
 	entry({"admin", "services", "clientstatus", "data"},
