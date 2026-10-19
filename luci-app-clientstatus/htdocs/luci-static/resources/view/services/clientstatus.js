@@ -162,6 +162,7 @@ return view.extend({
 			'<div class="cs-foot"><span id="cs-updated"></span><span>' + _('Auto refresh') + '</span></div>';
 
 		var wrap = document.createElement('div');
+		wrap.style.width = '100%';
 		wrap.appendChild(css);
 		wrap.appendChild(root);
 
@@ -306,7 +307,7 @@ return view.extend({
 					});
 				}
 			});
-		}, 30000));
+		}, 10000));
 
 		this.onUnload = onUnload;
 
