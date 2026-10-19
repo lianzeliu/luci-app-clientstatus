@@ -8,7 +8,10 @@ return view.extend({
 	},
 
 	render: function(data) {
-		var clients = (data && data.clients) || [];
+		var clients = [];
+		if (data && data.clients) {
+			clients = Array.isArray(data.clients) ? data.clients : Object.values(data.clients);
+		}
 		var speeds = {};
 		var sortK = 'status';
 		var sortA = true;
@@ -209,7 +212,7 @@ return view.extend({
 
 		wrap.querySelector('#cs-refreshbtn').addEventListener('click', function() {
 			apiGet('admin/services/clientstatus/data').then(function(d) {
-				if (d && d.clients) { clients = d.clients; renderRows(); }
+				if (d && d.clients) { clients = Array.isArray(d.clients) ? d.clients : Object.values(d.clients); renderRows(); }
 			});
 		});
 
@@ -227,7 +230,7 @@ return view.extend({
 					b.disabled = false;
 					if (r && r.ok) {
 						apiGet('admin/services/clientstatus/data').then(function(d) {
-							if (d && d.clients) { clients = d.clients; renderRows(); }
+							if (d && d.clients) { clients = Array.isArray(d.clients) ? d.clients : Object.values(d.clients); renderRows(); }
 						});
 					}
 				});
@@ -245,7 +248,7 @@ return view.extend({
 					if (ok && inp.value.trim() !== cur) {
 						apiPost('admin/services/clientstatus/save_hostname', { mac: mac, hostname: inp.value.trim() }).then(function() {
 							apiGet('admin/services/clientstatus/data').then(function(d) {
-								if (d && d.clients) { clients = d.clients; renderRows(); }
+								if (d && d.clients) { clients = Array.isArray(d.clients) ? d.clients : Object.values(d.clients); renderRows(); }
 							});
 						});
 					} else renderRows();
@@ -271,7 +274,7 @@ return view.extend({
 				if (res && res.mtime !== undefined && (mtime < 0 || res.mtime !== mtime)) {
 					mtime = res.mtime;
 					apiGet('admin/services/clientstatus/data').then(function(d) {
-						if (d && d.clients) { clients = d.clients; renderRows(); }
+						if (d && d.clients) { clients = Array.isArray(d.clients) ? d.clients : Object.values(d.clients); renderRows(); }
 					});
 				}
 			});
