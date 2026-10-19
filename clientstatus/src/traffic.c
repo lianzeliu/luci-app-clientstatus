@@ -535,6 +535,7 @@ typedef struct {
     char key[128];
     uint64_t up, down;
     int seen;
+    int init;  /* 基线是否已初始化 */
 } HwFlow;
 
 static HwFlow g_flows[FLOW_BUCKETS];
@@ -569,6 +570,7 @@ static void flow_gc(void) {
         if (g_flows[i].key[0] && !g_flows[i].seen) {
             g_flows[i].key[0] = '\0';
             g_flows[i].up = g_flows[i].down = 0;
+            g_flows[i].init = 0;
             g_flow_n--;
         } else g_flows[i].seen = 0;
     }
@@ -616,9 +618,10 @@ static void hw_sample(void) {
         HwFlow *e = flow_find(key, 1);
         if (!e) continue;
         e->seen = 1;
-        if (e->up == 0 && e->down == 0 && cf.up == 0 && cf.down == 0) {
+        if (!e->init) {
             e->up = cf.up; e->down = cf.down;
-            continue;  /* 首见建基线 */
+            e->init = 1;
+            continue;  /* 首见建基线, 不计增量 */
         }
         uint64_t du = (cf.up > e->up) ? cf.up - e->up : 0;
         uint64_t dd = (cf.down > e->down) ? cf.down - e->down : 0;
