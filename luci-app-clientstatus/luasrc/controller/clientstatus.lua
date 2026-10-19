@@ -26,6 +26,9 @@ function index()
 	entry({"admin", "services", "clientstatus", "speed"},
 	      call("action_speed"), nil)
 
+	entry({"admin", "services", "clientstatus", "debug"},
+	      call("action_debug"), nil).leaf = true
+
 	entry({"admin", "services", "clientstatus", "toggle_acl"},
 	      call("action_toggle_acl"), nil).leaf = true
 
@@ -301,4 +304,45 @@ function action_reset()
 	send_usr1()
 	luci.http.prepare_content("application/json")
 	luci.http.write_json({ ok = true })
+end
+
+function action_debug()
+	local out = {}
+	-- traffic 文件内容
+	local f = io.open("/tmp/clientstatus.traffic", "r")
+	if f then
+		out.traffic = f:read("*a")
+		f:close()
+	else
+		out.traffic = "(no file)"
+	end
+	-- conntrack HW 流数量和总 bytes
+	local hw_flows = 0
+	local hw_bytes = 0
+	f = io.open("/proc/net/nf_conntrack", "r")
+	if f then
+		for line in f:lines() do
+			if line:find("%[HW_OFFLOAD%]", 1, true) then
+				hw_flows = hw_flows + 1
+				for b in line:gmatch("bytes=(%d+)") do
+					hw_bytes = hw_bytes + tonumber(b)
+				end
+			end
+		end
+		f:close()
+	else
+		out.ct_error = "cannot open /proc/net/nf_conntrack"
+	end
+	out.hw_flows = hw_flows
+	out.hw_bytes_total = hw_bytes
+	-- daemon 是否在跑
+	local pidf = io.open("/tmp/clientstatus.pid", "r")
+	if pidf then
+		out.daemon_pid = pidf:read("*l")
+		pidf:close()
+	else
+		out.daemon_pid = "(no pid file)"
+	end
+	luci.http.prepare_content("application/json")
+	luci.http.write_json(out)
 end
