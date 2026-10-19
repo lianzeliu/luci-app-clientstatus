@@ -26,9 +26,6 @@
 #include <arpa/inet.h>
 #include "traffic.h"
 
-/* 前向声明 */
-static void ipt_sync(void);
-
 #define ML 18
 #define TRAF_FILE   "/tmp/clientstatus.traffic"
 #define CT_PATH     "/proc/net/nf_conntrack"
@@ -204,8 +201,6 @@ void traf_rebuild_map(void) {
             pclose(f);
         }
     }
-
-    ipt_sync();
 }
 
 /* ─── 客户端累计 ─────────────────────────────────── */
@@ -213,14 +208,13 @@ void traf_rebuild_map(void) {
 typedef struct {
     char mac[ML];
     char ip[64];
-    uint64_t rx_hist[TRAF_SLOTS], tx_hist[TRAF_SLOTS];
-    time_t ts_hist[TRAF_SLOTS];
-    int head, n;
     double rx_spd, tx_spd;
     uint64_t rx_tot, tx_tot;
     uint64_t hwr_tot, hwt_tot;  /* 硬件累计 (兼容, 未用) */
     uint64_t prev_tot;
+    uint64_t last_rx, last_tx;  /* 上 tick 的 rx_tot/tx_tot, 算增量用 */
     int flat_ticks;
+    int ema_init;  /* EMA 是否已初始化 */
 } TrafCli;
 
 static TrafCli g_cli[MAX_CLI];
@@ -236,166 +230,6 @@ static TrafCli *traf_find(const char *mac, int create) {
     return tc;
 }
 
-/* ─── iptables 计数器 (wrtbwmon 方式: RRDIPT_FORWARD + -Z) ─── */
-
-/* 规则映射: ip -> (mac, 方向) */
-typedef struct {
-    char ip[64];
-    char mac[ML];
-    int is_up;  /* 1=上传(-s), 0=下载(-d) */
-    int v6;
-    uint64_t last_bytes;  /* 上次采样值, 防 -Z 失效用差值法 */
-} IptRule;
-
-static IptRule g_ipt[2048];
-static int g_ipt_n;
-
-static IptRule *ipt_find(const char *ip, int is_up, int v6) {
-    for (int i = 0; i < g_ipt_n; i++)
-        if (g_ipt[i].is_up == is_up && g_ipt[i].v6 == v6 && strcmp(g_ipt[i].ip, ip) == 0)
-            return &g_ipt[i];
-    return NULL;
-}
-
-/* 确保 RRDIPT_FORWARD 链存在 (wrtbwmon 方式); 返回 1 成功 */
-static int ipt_ensure(void) {
-    /* 清理 nft 残留 */
-    run("nft delete table inet cs_traffic 2>/dev/null");
-    /* 彻底清理旧的 RRDIPT_FORWARD (防残留规则) */
-    run("iptables -t mangle -D FORWARD -j RRDIPT_FORWARD 2>/dev/null; "
-        "iptables -t mangle -F RRDIPT_FORWARD 2>/dev/null; "
-        "iptables -t mangle -X RRDIPT_FORWARD 2>/dev/null; "
-        "ip6tables -t mangle -D FORWARD -j RRDIPT_FORWARD 2>/dev/null; "
-        "ip6tables -t mangle -F RRDIPT_FORWARD 2>/dev/null; "
-        "ip6tables -t mangle -X RRDIPT_FORWARD 2>/dev/null");
-    /* 建链 */
-    run("iptables -t mangle -N RRDIPT_FORWARD 2>/dev/null; "
-        "iptables -t mangle -I FORWARD -j RRDIPT_FORWARD 2>/dev/null");
-    run("ip6tables -t mangle -N RRDIPT_FORWARD 2>/dev/null; "
-        "ip6tables -t mangle -I FORWARD -j RRDIPT_FORWARD 2>/dev/null");
-    return 1;
-}
-
-/* 加一条规则: -s IP 或 -d IP (wrtbwmon 方式) */
-static void ipt_add_rule(const char *ip, int is_up, int v6) {
-    const char *ipt = v6 ? "ip6tables" : "iptables";
-    char cmd[256];
-    snprintf(cmd, sizeof cmd, "%s -t mangle -C RRDIPT_FORWARD %s %s -j RETURN 2>/dev/null",
-             ipt, is_up ? "-s" : "-d", ip);
-    if (system(cmd) == 0) return;
-    snprintf(cmd, sizeof cmd, "%s -t mangle -A RRDIPT_FORWARD %s %s -j RETURN 2>/dev/null",
-             ipt, is_up ? "-s" : "-d", ip);
-    system(cmd);
-}
-
-static void ipt_del_rule(const char *ip, int is_up, int v6) {
-    const char *ipt = v6 ? "ip6tables" : "iptables";
-    char cmd[256];
-    snprintf(cmd, sizeof cmd, "%s -t mangle -D RRDIPT_FORWARD %s %s -j RETURN 2>/dev/null",
-             ipt, is_up ? "-s" : "-d", ip);
-    system(cmd);
-}
-
-static void ipt_add_ip(const char *ipstr, int v6, const char *mac) {
-    for (int dir = 0; dir < 2; dir++) {
-        int is_up = (dir == 0);
-        if (ipt_find(ipstr, is_up, v6)) continue;
-        ipt_add_rule(ipstr, is_up, v6);
-        if (g_ipt_n < 2048) {
-            IptRule *r = &g_ipt[g_ipt_n++];
-            strncpy(r->ip, ipstr, sizeof r->ip - 1);
-            r->ip[sizeof r->ip - 1] = '\0';
-            mac_copy(r->mac, mac);
-            r->is_up = is_up;
-            r->v6 = v6;
-            r->last_bytes = 0;
-        }
-    }
-}
-
-/* 按当前映射增量同步规则 */
-static void ipt_sync(void) {
-    for (int i = 0; i < g_map_n; i++) {
-        char ipstr[64];
-        if (g_map[i].v6)
-            inet_ntop(AF_INET6, &g_map[i].a6, ipstr, sizeof ipstr);
-        else {
-            struct in_addr a = { .s_addr = g_map[i].v4 };
-            inet_ntop(AF_INET, &a, ipstr, sizeof ipstr);
-        }
-        ipt_add_ip(ipstr, g_map[i].v6, g_map[i].mac);
-    }
-    for (int i = 0; i < g_ipt_n; ) {
-        int want = 0;
-        for (int j = 0; j < g_map_n; j++) {
-            char ipstr[64];
-            if (g_map[j].v6)
-                inet_ntop(AF_INET6, &g_map[j].a6, ipstr, sizeof ipstr);
-            else {
-                struct in_addr a = { .s_addr = g_map[j].v4 };
-                inet_ntop(AF_INET, &a, ipstr, sizeof ipstr);
-            }
-            if (g_ipt[i].v6 == g_map[j].v6 && strcmp(g_ipt[i].ip, ipstr) == 0) {
-                want = 1; break;
-            }
-        }
-        if (!want) {
-            ipt_del_rule(g_ipt[i].ip, g_ipt[i].is_up, g_ipt[i].v6);
-            g_ipt[i] = g_ipt[--g_ipt_n];
-        } else i++;
-    }
-}
-
-/* 解析 iptables -nvxL 输出; -Z 原子清零 (wrtbwmon 方式) */
-static void ipt_sample(void) {
-    for (int v6 = 0; v6 <= 1; v6++) {
-        const char *ipt = v6 ? "ip6tables" : "iptables";
-        char cmd[256];
-        snprintf(cmd, sizeof cmd, "%s -t mangle -nvxL RRDIPT_FORWARD -Z 2>/dev/null", ipt);
-        FILE *f = popen(cmd, "r");
-        if (!f) continue;
-        char line[512];
-        while (fgets(line, sizeof line, f)) {
-            if ((strstr(line, "pkts") && strstr(line, "bytes")) || strstr(line, "Chain"))
-                continue;
-            unsigned long bytes;
-            char target[32], prot[16], opt[16], in[16], out[16], src[64], dst[64];
-            unsigned long pkts_dummy;
-            if (sscanf(line, "%lu %lu %31s %15s %15s %15s %15s %63s %63s",
-                       &pkts_dummy, &bytes, target, prot, opt, in, out, src, dst) < 9)
-                continue;
-            if (strcmp(target, "RETURN") != 0) continue;
-            const char *any = v6 ? "::/0" : "0.0.0.0/0";
-            int is_up = -1;
-            const char *ip = NULL;
-            if (strcmp(dst, any) == 0 && strcmp(src, any) != 0) {
-                is_up = 1; ip = src;
-            } else if (strcmp(src, any) == 0 && strcmp(dst, any) != 0) {
-                is_up = 0; ip = dst;
-            } else continue;
-            char ip_clean[64];
-            strncpy(ip_clean, ip, sizeof ip_clean - 1);
-            ip_clean[sizeof ip_clean - 1] = '\0';
-            char *slash = strchr(ip_clean, '/');
-            if (slash) *slash = '\0';
-            IptRule *r = ipt_find(ip_clean, is_up, v6);
-            if (!r) continue;
-            /* -Z 已清零: bytes 即本周期增量. 若 -Z 失效 (bytes 累计), 用差值法 */
-            uint64_t delta;
-            if (bytes >= r->last_bytes)
-                delta = bytes - r->last_bytes;
-            else
-                delta = bytes;  /* 被清零过, 直接用 */
-            r->last_bytes = bytes;
-            if (delta == 0) continue;
-            TrafCli *tc = traf_find(r->mac, 1);
-            if (!tc) continue;
-            if (is_up) tc->tx_hist[tc->head] += delta;
-            else tc->rx_hist[tc->head] += delta;
-        }
-        pclose(f);
-    }
-}
 
 /* ─── conntrack [HW_OFFLOAD] 补充 ─────────────────── */
 
@@ -587,38 +421,52 @@ static void hw_sample(void) {
     flow_gc();
 }
 
-/* ─── 滑动窗口速率 + 落盘 ───────────────────────────── */
+/* ─── EMA 平滑速率 + 落盘 ───────────────────────────── */
+
+#define EMA_ALPHA 0.4  /* EMA 系数: 0.4 ≈ 2-3 秒有效窗口, 响应快且平滑 */
 
 static void push_sample(TrafCli *tc, time_t now) {
-    /* 快速判停: 连续 FLAT_SNAP 个 tick 无变化即判停 */
+    (void)now;
+    /* 快速判停: 连续 2 个 tick 无变化即判停 */
     uint64_t tot = tc->rx_tot + tc->tx_tot;
-    if (tot == tc->prev_tot) tc->flat_ticks++;
-    else tc->flat_ticks = 0;
+    if (tot == tc->prev_tot) {
+        tc->flat_ticks++;
+    } else {
+        tc->flat_ticks = 0;
+    }
     tc->prev_tot = tot;
 
-    tc->head = (tc->head + 1) % TRAF_SLOTS;
-    tc->rx_hist[tc->head] = tc->rx_tot;
-    tc->tx_hist[tc->head] = tc->tx_tot;
-    tc->ts_hist[tc->head] = now;
-    if (tc->n < TRAF_SLOTS) tc->n++;
-
-    /* 找窗口内最老的样本 */
-    int oldest = tc->head;
-    int idx = tc->head;
-    for (int i = 1; i < tc->n; i++) {
-        idx = (idx - 1 + TRAF_SLOTS) % TRAF_SLOTS;
-        if (now - tc->ts_hist[idx] > TRAF_WIN) break;
-        oldest = idx;
-    }
-    double dt = (double)(tc->ts_hist[tc->head] - tc->ts_hist[oldest]);
-    if (tc->flat_ticks >= FLAT_SNAP) {
-        tc->rx_spd = tc->tx_spd = 0;  /* 快速判停 */
-    } else if (dt >= 2 * TRAF_TICK && tc->rx_hist[tc->head] >= tc->rx_hist[oldest]) {
-        tc->rx_spd = (double)(tc->rx_hist[tc->head] - tc->rx_hist[oldest]) / dt;
-        tc->tx_spd = (double)(tc->tx_hist[tc->head] - tc->tx_hist[oldest]) / dt;
-    } else {
+    if (tc->flat_ticks >= 2) {
         tc->rx_spd = tc->tx_spd = 0;
+        tc->ema_init = 0;  /* 下次从零启动 */
+        return;
     }
+
+    /* 本 tick 增量 */
+    uint64_t rx_delta = (tc->rx_tot >= tc->last_rx) ? (tc->rx_tot - tc->last_rx) : 0;
+    uint64_t tx_delta = (tc->tx_tot >= tc->last_tx) ? (tc->tx_tot - tc->last_tx) : 0;
+    tc->last_rx = tc->rx_tot;
+    tc->last_tx = tc->tx_tot;
+
+    /* sanity: 单 tick 超过 500MB 视为异常 */
+    if (rx_delta > 500ULL*1024*1024) rx_delta = 0;
+    if (tx_delta > 500ULL*1024*1024) tx_delta = 0;
+
+    double inst_rx = (double)rx_delta;
+    double inst_tx = (double)tx_delta;
+
+    if (!tc->ema_init) {
+        tc->rx_spd = inst_rx;
+        tc->tx_spd = inst_tx;
+        tc->ema_init = 1;
+    } else {
+        tc->rx_spd = EMA_ALPHA * inst_rx + (1 - EMA_ALPHA) * tc->rx_spd;
+        tc->tx_spd = EMA_ALPHA * inst_tx + (1 - EMA_ALPHA) * tc->tx_spd;
+    }
+
+    /* 小流量抑制: < 1KB/s 视为 0 */
+    if (tc->rx_spd < 1024) tc->rx_spd = 0;
+    if (tc->tx_spd < 1024) tc->tx_spd = 0;
 }
 
 static void traf_write_file(time_t now) {
@@ -626,8 +474,8 @@ static void traf_write_file(time_t now) {
     snprintf(tmp, sizeof tmp, "%s.tmp", TRAF_FILE);
     FILE *f = fopen(tmp, "w");
     if (!f) return;
-    fprintf(f, "# clientstatus traffic | ts=%ld win=%d src=iptables+hw\n",
-            (long)now, TRAF_WIN);
+    fprintf(f, "# clientstatus traffic | ts=%ld src=conntrack-hw-only ema=0.4\n",
+            (long)now);
     fprintf(f, "# MAC|IP|RX_SPD|TX_SPD|RX_TOT|TX_TOT|HW_RX|HW_TX\n");
     for (int i = 0; i < g_cli_n; i++) {
         TrafCli *tc = &g_cli[i];
@@ -679,9 +527,8 @@ void traf_init(const char *lan_iface) {
             fclose(sf);
         }
     }
-    /* 建链 (ipt_ensure 内已处理, 无残留) */
-    ipt_ensure();
-    g_ipt_n = 0;
+    /* 确保 conntrack accounting 开启 (硬件流需要) */
+    system("sysctl -w net.netfilter.nf_conntrack_acct=1 2>/dev/null");
     traf_rebuild_map();
 }
 
@@ -690,12 +537,10 @@ void traf_tick(void) {
     time_t now = time(NULL);
     tick++;
 
-    ipt_sample();   /* nft 命名计数器增量, 主数据源 (wrtbwmon 方式) */
-    /* hw_sample() 已禁用: 按 wrtbwmon 原理, 只用 nft, 不用 conntrack 补充 */
-    /* hw_sample();    /\* conntrack [HW_OFFLOAD] 增量, 硬件补充 *\/ */
+    hw_sample();  /* 纯 conntrack [HW_OFFLOAD], 不用 iptables */
 
-    if (tick % NFT_SYNC_EVERY == 0)
-        traf_rebuild_map();  /* 刷新映射 + 同步规则 */
+    if (tick % 10 == 0)
+        traf_rebuild_map();  /* 刷新 IP->MAC 映射 */
 
     for (int i = 0; i < g_cli_n; i++)
         push_sample(&g_cli[i], now);
