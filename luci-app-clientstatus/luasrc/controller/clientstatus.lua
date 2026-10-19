@@ -32,15 +32,8 @@ function index()
 end
 
 function action_main()
-	-- JS view 由 LuCI 自动加载 (htdocs/luci-static/resources/view/services/clientstatus.js)
-	-- 这里只做启用检查
-	local uci = require("luci.model.uci").cursor()
-	local enabled = uci:get("clientstatus", "main", "enabled") or "0"
-	if enabled ~= "1" then
-		luci.http.redirect(
-			luci.dispatcher.build_url("admin/system/startup"))
-	end
-	-- 启用时不输出, dispatcher 会加载对应的 JS view
+	-- JS view 由 LuCI 自动加载, 无需手动启用
+	-- (daemon 由 init 脚本管理, UI 只负责展示)
 end
 
 local function valid_mac(mac)
