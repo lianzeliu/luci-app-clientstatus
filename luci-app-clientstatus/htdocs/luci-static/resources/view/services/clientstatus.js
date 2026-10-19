@@ -78,7 +78,9 @@ return view.extend({
 			+ '.cs-empty{text-align:center;padding:70px 20px;color:var(--text3)}'
 			+ '.cs-foot{display:flex;justify-content:space-between;padding:12px 2px 0;font-size:12px;color:var(--text3)}'
 			+ '.cs-edit{padding:4px 8px;border:1px solid var(--accent);border-radius:6px;font-size:13px;outline:none;background:var(--surface);color:var(--text);width:170px}'
-			+ '@media(max-width:760px){.cs-card{overflow-x:auto}.cs-table{min-width:640px}.cs-bar .cs-sp{display:none}}';
+			+ '@media(max-width:760px){.cs-card{overflow-x:auto}.cs-table{min-width:640px}.cs-bar .cs-sp{display:none}'
+			+ '.cs-wan-down,.cs-wan-up{font-size:18px!important;min-width:110px!important}'
+			+ '.cs-top{padding:6px 2px 12px}}';
 
 		function apiGet(path) {
 			return fetch(L.url(path) + '?_=' + Date.now(), { credentials: 'same-origin' })
