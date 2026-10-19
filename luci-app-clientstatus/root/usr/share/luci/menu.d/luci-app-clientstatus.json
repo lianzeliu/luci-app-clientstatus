@@ -1,0 +1,1 @@
+{"admin/services/clientstatus":{"depends":{"uci":{"clientstatus":true}},"order":60,"path":"services/clientstatus","title":"Client Management","type":"view"}}
