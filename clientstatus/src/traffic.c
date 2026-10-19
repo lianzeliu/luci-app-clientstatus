@@ -214,6 +214,7 @@ typedef struct {
     char mac[ML];
     int is_up;
     unsigned long handle;
+    uint64_t last_bytes;  /* 上次采样值, 算差值用 (不依赖 reset) */
 } NftCounter;
 
 static NftCounter g_nft[2048];
@@ -305,6 +306,7 @@ static void nft_add_ip(const char *ipstr, int v6, const char *mac) {
             mac_copy(nc->mac, mac);
             nc->is_up = is_up;
             nc->handle = h;
+            nc->last_bytes = 0;  /* 新规则计数器从 0 开始 */
         }
     }
 }
@@ -408,13 +410,19 @@ static void nft_parse_counters(const char *json) {
         b = strchr(b, ':');
         if (!b) break;
         unsigned long long bytes = strtoull(b + 1, NULL, 10);
-        if (bytes > 0) {
-            NftCounter *nc = nft_find(name);
-            if (nc) {
+        NftCounter *nc = nft_find(name);
+        if (nc) {
+            /* 差值法: 不依赖 reset, reset 失效也不会平方级暴涨 */
+            uint64_t delta = 0;
+            if (bytes >= nc->last_bytes)
+                delta = bytes - nc->last_bytes;
+            /* bytes < last_bytes: 计数器被重置/回绕, 记 0 防暴涨 */
+            nc->last_bytes = bytes;
+            if (delta > 0) {
                 TrafCli *tc = traf_find(nc->mac, 1);
                 if (tc) {
-                    if (nc->is_up) tc->tx_tot += bytes;
-                    else          tc->rx_tot += bytes;
+                    if (nc->is_up) tc->tx_tot += delta;
+                    else          tc->rx_tot += delta;
                 }
             }
         }
@@ -446,9 +454,7 @@ static void nft_sample(void) {
     buf[len] = '\0';
     nft_parse_counters(buf);
     free(buf);
-    snprintf(cmd, sizeof cmd,
-             "nft reset counters table inet %s 2>/dev/null", NFT_TABLE);
-    run(cmd);
+    /* 不再 reset: 用 last_bytes 差值法, 避免 reset 失效导致平方级暴涨 */
 }
 
 

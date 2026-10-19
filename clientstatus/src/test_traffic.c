@@ -46,6 +46,21 @@ int main(void) {
           "nft JSON: u_v6_5 tx=70000");
     CHECK(t1->tx_tot != 10999, "unknown counter d_v4_999 ignored");
 
+    /* ---- 2b. 差值法: 第二次采样只计增量, reset 失效也不暴涨 ---- */
+    const char *mock_json2 =
+        "{\"nftables\": ["
+        "{\"counter\": {\"name\": \"u_v4_1\", \"bytes\": 15000}}, "
+        "{\"counter\": {\"name\": \"d_v4_1\", \"bytes\": 60000}}"
+        "]}";
+    nft_parse_counters(mock_json2);
+    CHECK(t1->tx_tot == 15000 && t1->rx_tot == 60000,
+          "nft delta: second sample adds only 5000/10000");
+    /* 模拟计数器回绕/重置: 值变小则记 0, 不暴涨 */
+    const char *mock_json3 =
+        "{\"nftables\": [{\"counter\": {\"name\": \"u_v4_1\", \"bytes\": 100}}]}";
+    nft_parse_counters(mock_json3);
+    CHECK(t1->tx_tot == 15000, "nft reset/wrap: no spike on counter decrease");
+
     /* ---- 3. conntrack [HW_OFFLOAD] 补充 ---- */
     const char *hwline =
         "ipv4     2 tcp      6 431982 ESTABLISHED src=192.168.1.2 dst=1.2.3.4 "
