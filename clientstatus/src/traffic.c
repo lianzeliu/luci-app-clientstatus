@@ -33,9 +33,9 @@
 #define ARP_PATH    "/proc/net/arp"
 #define LEASES_PATH "/tmp/dhcp.leases"
 
-#define TRAF_WIN      8    /* 速率滑动窗口(秒) */
-#define TRAF_SLOTS    12   /* 环形槽位数 >= WIN/TICK + 2 */
-#define FLAT_SNAP     6    /* 连续 N 个 tick 累计不变 -> 直接判停, 速率置 0 */
+#define TRAF_WIN      3    /* 速率滑动窗口(秒): 短窗口, 停得快 */
+#define TRAF_SLOTS    5    /* 环形槽位数 >= WIN/TICK + 2 */
+#define FLAT_SNAP     2    /* 连续 N 个 tick 累计不变 -> 直接判停, 速率置 0 */
 #define MAX_CLI       512
 #define FLOW_BUCKETS  4096
 #define MAX_LINE      4096
@@ -753,7 +753,8 @@ void traf_tick(void) {
     tick++;
 
     nft_sample();   /* nft 命名计数器增量, 主数据源 */
-    hw_sample();    /* conntrack [HW_OFFLOAD] 增量, 硬件补充 */
+    /* hw_sample() 已禁用: 如确认硬加速生效且 nft 看不到流量, 再打开 */
+    /* hw_sample();    /\* conntrack [HW_OFFLOAD] 增量, 硬件补充 *\/ */
 
     if (tick % NFT_SYNC_EVERY == 0)
         traf_rebuild_map();  /* 刷新映射 + 同步规则 */
