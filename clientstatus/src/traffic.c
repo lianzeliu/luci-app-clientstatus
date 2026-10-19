@@ -33,8 +33,8 @@
 #define ARP_PATH    "/proc/net/arp"
 #define LEASES_PATH "/tmp/dhcp.leases"
 
-#define TRAF_WIN      3    /* 速率滑动窗口(秒): 短窗口, 停得快 */
-#define TRAF_SLOTS    5    /* 环形槽位数 >= WIN/TICK + 2 */
+#define TRAF_WIN      10   /* 速率滑动窗口(秒): 10s 平均, 平滑突发 */
+#define TRAF_SLOTS    12   /* 环形槽位数 >= WIN/TICK + 2 */
 #define FLAT_SNAP     2    /* 连续 N 个 tick 累计不变 -> 直接判停, 速率置 0 */
 #define MAX_CLI       512
 #define FLOW_BUCKETS  4096
