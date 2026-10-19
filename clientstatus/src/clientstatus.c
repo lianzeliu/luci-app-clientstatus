@@ -743,6 +743,29 @@ static void merge_and_output(void) {
 /* ─── Main ───────────────────────────────────────────── */
 
 int main(void) {
+    /* 单实例锁: 防止多 daemon 重复建 nft 规则导致重复计数 */
+    {
+        FILE *pf = fopen(PID_FILE, "r");
+        if (pf) {
+            int oldpid = 0;
+            if (fscanf(pf, "%d", &oldpid) == 1 && oldpid > 0) {
+                char procpath[64];
+                snprintf(procpath, sizeof procpath, "/proc/%d/cmdline", oldpid);
+                FILE *cf = fopen(procpath, "r");
+                if (cf) {
+                    char cmd[256] = "";
+                    size_t n = fread(cmd, 1, sizeof cmd - 1, cf);
+                    fclose(cf);
+                    if (n > 0 && strstr(cmd, "clientstatus")) {
+                        fprintf(stderr, "clientstatus: another instance (pid %d) is running\n", oldpid);
+                        fclose(pf);
+                        return 1;
+                    }
+                }
+            }
+            fclose(pf);
+        }
+    }
     FILE *pf = fopen(PID_FILE, "w");
     if (pf) { fprintf(pf, "%d\n", getpid()); fclose(pf); }
 
