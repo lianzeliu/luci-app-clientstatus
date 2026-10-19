@@ -4,7 +4,7 @@ set -e
 PKG="luci-app-clientstatus_package"
 ARCHIVE="${PKG}.tar.gz"
 TMP_DIR="/tmp/${PKG}"
-URL="https://raw.githubusercontent.com/migee99/luci-app-clientstatus/main/${ARCHIVE}"
+URL="https://raw.githubusercontent.com/lianzeliu/luci-app-clientstatus/main/${ARCHIVE}"
 
 echo "== 创建临时目录..."
 mkdir -p "${TMP_DIR}"
