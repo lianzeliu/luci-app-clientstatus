@@ -33,8 +33,8 @@
 #define ARP_PATH    "/proc/net/arp"
 #define LEASES_PATH "/tmp/dhcp.leases"
 
-#define TRAF_WIN      10   /* 速率滑动窗口(秒): 10s 平均, 平滑突发 */
-#define TRAF_SLOTS    12   /* 环形槽位数 >= WIN/TICK + 2 */
+#define TRAF_WIN      3    /* 速率滑动窗口(秒): 3s, 跟 wrtbwmon 短间隔一致 */
+#define TRAF_SLOTS    5    /* 环形槽位数 >= WIN/TICK + 2 */
 #define FLAT_SNAP     2    /* 连续 N 个 tick 累计不变 -> 直接判停, 速率置 0 */
 #define MAX_CLI       512
 #define FLOW_BUCKETS  4096
@@ -280,22 +280,19 @@ static void nft_del_rule(unsigned long handle) {
 /* 为一个 IP 建上传/下载两条规则 */
 /* 为一个 IP 建上传/下载两条规则, 限定 WAN 口 (只计 WAN 流量) */
 static void nft_add_ip(const char *ipstr, int v6, const char *mac) {
-    const char *wan = v6 ? g_wan6 : g_wan4;
-    if (!wan[0]) return;  /* WAN 口未知, 暂不建规则 */
+    /* wrtbwmon 方式: 只按 IP, 不限 WAN 口 (-s IP / -d IP) */
     char match[192], cname[32];
     for (int dir = 0; dir < 2; dir++) {
         int is_up = (dir == 0);
         snprintf(cname, sizeof cname, "%s_%s_%d",
                  is_up ? "u" : "d", v6 ? "v6" : "v4", g_nft_seq++);
-        /* 上传: LAN -> WAN (oifname); 下载: WAN -> LAN (iifname) */
+        /* 上传: -s IP; 下载: -d IP (与 wrtbwmon 的 -s/-d RETURN 规则一致) */
         if (v6)
-            snprintf(match, sizeof match, "ip6 %s %s %s \"%s\"",
-                     is_up ? "saddr" : "daddr", ipstr,
-                     is_up ? "oifname" : "iifname", wan);
+            snprintf(match, sizeof match, "ip6 %s %s",
+                     is_up ? "saddr" : "daddr", ipstr);
         else
-            snprintf(match, sizeof match, "ip %s %s %s \"%s\"",
-                     is_up ? "saddr" : "daddr", ipstr,
-                     is_up ? "oifname" : "iifname", wan);
+            snprintf(match, sizeof match, "ip %s %s",
+                     is_up ? "saddr" : "daddr", ipstr);
         unsigned long h = nft_add_rule(match, cname);
         if (h && g_nft_n < 2048) {
             NftCounter *nc = &g_nft[g_nft_n++];
@@ -752,9 +749,9 @@ void traf_tick(void) {
     time_t now = time(NULL);
     tick++;
 
-    /* nft 已禁用: 全部流量走 PPE, 软件计数器看不到 */
-    /* nft_sample();   /\* nft 命名计数器增量, 主数据源 *\/ */
-    hw_sample();    /* conntrack [HW_OFFLOAD] 增量, 硬件加速流量 */
+    nft_sample();   /* nft 命名计数器增量, 主数据源 (wrtbwmon 方式) */
+    /* hw_sample() 已禁用: 按 wrtbwmon 原理, 只用 nft, 不用 conntrack 补充 */
+    /* hw_sample();    /\* conntrack [HW_OFFLOAD] 增量, 硬件补充 *\/ */
 
     if (tick % NFT_SYNC_EVERY == 0)
         traf_rebuild_map();  /* 刷新映射 + 同步规则 */
