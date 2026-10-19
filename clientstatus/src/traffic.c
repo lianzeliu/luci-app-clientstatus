@@ -12,6 +12,7 @@
  * 补充数据源: conntrack [HW_OFFLOAD] 流。
  *   - 走 PPE 硬件的包不经过 netfilter, nft 看不到;
  *     用 per-flow 基线跟踪内核同步回来的硬件增量, 与 nft 互补不重叠。
+ *   - 同样只计 WAN (两端都是 LAN IP 的流跳过)。
  * 速率: 1s 采样, 8s 滑动窗口 + 连续 6s 无变化直接判停。
  */
 #define _GNU_SOURCE
@@ -47,6 +48,32 @@
 static void run(const char *cmd) {
     int r = system(cmd);
     (void)r;
+}
+
+/* WAN 口 (从默认路由探测) */
+static char g_wan4[32], g_wan6[32];
+
+static void detect_wan_one(const char *cmd, char *out, size_t outlen) {
+    out[0] = '\0';
+    FILE *f = popen(cmd, "r");
+    if (!f) return;
+    char line[256];
+    if (fgets(line, sizeof line, f)) {
+        char *p = strstr(line, " dev ");
+        if (p) {
+            p += 5;
+            size_t i = 0;
+            while (*p && !isspace((unsigned char)*p) && i + 1 < outlen)
+                out[i++] = *p++;
+            out[i] = '\0';
+        }
+    }
+    pclose(f);
+}
+
+static void detect_wan(void) {
+    detect_wan_one("ip -4 route show default 2>/dev/null", g_wan4, sizeof g_wan4);
+    detect_wan_one("ip -6 route show default 2>/dev/null", g_wan6, sizeof g_wan6);
 }
 
 /* ─── IP -> MAC 映射 ─────────────────────────────── */
@@ -250,18 +277,24 @@ static void nft_del_rule(unsigned long handle) {
 }
 
 /* 为一个 IP 建上传/下载两条规则 */
+/* 为一个 IP 建上传/下载两条规则, 限定 WAN 口 (只计 WAN 流量) */
 static void nft_add_ip(const char *ipstr, int v6, const char *mac) {
-    char match[128], cname[32];
+    const char *wan = v6 ? g_wan6 : g_wan4;
+    if (!wan[0]) return;  /* WAN 口未知, 暂不建规则 */
+    char match[192], cname[32];
     for (int dir = 0; dir < 2; dir++) {
         int is_up = (dir == 0);
         snprintf(cname, sizeof cname, "%s_%s_%d",
                  is_up ? "u" : "d", v6 ? "v6" : "v4", g_nft_seq++);
+        /* 上传: LAN -> WAN (oifname); 下载: WAN -> LAN (iifname) */
         if (v6)
-            snprintf(match, sizeof match, "ip6 %s %s",
-                     is_up ? "saddr" : "daddr", ipstr);
+            snprintf(match, sizeof match, "ip6 %s %s %s \"%s\"",
+                     is_up ? "saddr" : "daddr", ipstr,
+                     is_up ? "oifname" : "iifname", wan);
         else
-            snprintf(match, sizeof match, "ip %s %s",
-                     is_up ? "saddr" : "daddr", ipstr);
+            snprintf(match, sizeof match, "ip %s %s %s \"%s\"",
+                     is_up ? "saddr" : "daddr", ipstr,
+                     is_up ? "oifname" : "iifname", wan);
         unsigned long h = nft_add_rule(match, cname);
         if (h && g_nft_n < 2048) {
             NftCounter *nc = &g_nft[g_nft_n++];
@@ -276,8 +309,18 @@ static void nft_add_ip(const char *ipstr, int v6, const char *mac) {
     }
 }
 
-/* 按当前映射增量同步规则 */
+/* 按当前映射增量同步规则; WAN 口变化时重建全部规则 */
 static void nft_sync(void) {
+    char old_wan4[32], old_wan6[32];
+    memcpy(old_wan4, g_wan4, sizeof old_wan4);
+    memcpy(old_wan6, g_wan6, sizeof old_wan6);
+    detect_wan();
+    if (strcmp(old_wan4, g_wan4) != 0 || strcmp(old_wan6, g_wan6) != 0) {
+        /* WAN 口变了: 删掉全部规则重建 (计数器 1s 采样已读走, 损失 <1s) */
+        for (int i = 0; i < g_nft_n; i++)
+            nft_del_rule(g_nft[i].handle);
+        g_nft_n = 0;
+    }
     for (int i = 0; i < g_map_n; i++) {
         char ipstr[64];
         if (g_map[i].v6)
@@ -577,9 +620,12 @@ static void hw_sample(void) {
         if (du == 0 && dd == 0) continue;
 
         int is_v6; uint32_t v4; struct in6_addr a6;
-        const char *mac = hw_ipmac(&cf, 1, &is_v6, &v4, &a6);
-        int lan_is_src = 1;
-        if (!mac) { mac = hw_ipmac(&cf, 0, &is_v6, &v4, &a6); lan_is_src = 0; }
+        int is_v6d; uint32_t v4d; struct in6_addr a6d;
+        const char *mac_s = hw_ipmac(&cf, 1, &is_v6, &v4, &a6);
+        const char *mac_d = hw_ipmac(&cf, 0, &is_v6d, &v4d, &a6d);
+        if (mac_s && mac_d) continue;  /* LAN 互访, 只计 WAN */
+        const char *mac = mac_s ? mac_s : mac_d;
+        int lan_is_src = (mac_s != NULL);
         if (!mac) continue;
 
         uint64_t up = lan_is_src ? du : dd;

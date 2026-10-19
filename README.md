@@ -18,9 +18,11 @@ ACL 控制：在界面上直接拦截/放行客户端
 流量统计引擎（v1.1.0，nftables 命名计数器 + MTK 硬件加速补充，无 WiFi 版）：
 - 主数据源为 nftables：表 inet cs_traffic，base chain 直接挂 forward hook
   （priority -5，不碰 firewall4）。每个 LAN IP 建两条规则
-  （ip saddr 记上传 / ip daddr 记下载），每条带独立命名 counter；
+  （ip saddr + oifname WAN 记上传 / ip daddr + iifname WAN 记下载），
+  只统计 WAN 流量，LAN 内互访不计入；
   每秒 `nft --json` 读出精确增量并重置，JSON 解析可靠，无需 per-flow 基线，
   不受 conntrack 同步抖动影响；IP→MAC 经 ARP 表归属；
+  WAN 口从默认路由自动探测，变化时重建规则；
   （wrtbwmon 原理的原生 nft 实现，不再经 iptables-nft 转译）
 - 走 PPE 硬件加速的包不经过 netfilter、nft 看不到，单独用 conntrack
   [HW_OFFLOAD] 流的 per-flow 基线跟踪硬件增量，两者互补不重叠

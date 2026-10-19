@@ -4,9 +4,11 @@
  * 设计要点:
  *  1. 主数据源为 nftables 命名计数器: 表 inet cs_traffic, base chain
  *     直接挂 forward hook (priority -5, 不碰 firewall4)。
- *     每个 LAN IP 建两条规则: ip saddr (上传) / ip daddr (下载),
+ *     每个 LAN IP 建两条规则: ip saddr + oifname WAN (上传) /
+ *     ip daddr + iifname WAN (下载), 只计 WAN 流量, LAN 互访不计。
  *     每条带独立命名 counter。每秒 nft --json 读出精确增量并重置,
  *     无需 per-flow 基线管理; IP->MAC 经 ARP 表归属。
+ *     WAN 口从默认路由探测, 变化时自动重建规则。
  *  2. 补充数据源为 conntrack [HW_OFFLOAD] 流: 走 PPE 硬件的包
  *     不经过 netfilter, nft 看不到, 用 per-flow 基线跟踪
  *     内核同步回来的硬件增量, 与 nft 互补不重叠。
