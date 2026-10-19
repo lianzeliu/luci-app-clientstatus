@@ -145,7 +145,6 @@ static const char *map_lookup_v6(const struct in6_addr *a6) {
 }
 
 /* 从 dhcp.leases / arp / v6 neigh 重建映射, 并同步 nft 规则 */
-static void nft_sync(void);  /* 前向声明, 定义在后 */
 void traf_rebuild_map(void) {
     g_map_n = 0;
     FILE *f;
@@ -203,123 +202,83 @@ void traf_rebuild_map(void) {
         }
     }
 
-    nft_sync();
+    ipt_sync();
 }
 
-/* ─── nftables 计数器 (命名 counter + JSON, 原生 nft) ─── */
+/* ─── iptables 计数器 (wrtbwmon 方式: RRDIPT_FORWARD + -Z) ─── */
 
-/* 计数器映射: name -> (mac, 方向, rule handle) */
+/* 规则映射: ip -> (mac, 方向) */
 typedef struct {
-    char name[32];
+    char ip[64];
     char mac[ML];
-    int is_up;
-    unsigned long handle;
-    uint64_t last_bytes;  /* 上次采样值, 算差值用 (不依赖 reset) */
-} NftCounter;
+    int is_up;  /* 1=上传(-s), 0=下载(-d) */
+    int v6;
+    uint64_t last_bytes;  /* 上次采样值, 防 -Z 失效用差值法 */
+} IptRule;
 
-static NftCounter g_nft[2048];
-static int g_nft_n;
-static int g_nft_seq;
+static IptRule g_ipt[2048];
+static int g_ipt_n;
 
-static NftCounter *nft_find(const char *name) {
-    for (int i = 0; i < g_nft_n; i++)
-        if (strcmp(g_nft[i].name, name) == 0) return &g_nft[i];
+static IptRule *ipt_find(const char *ip, int is_up, int v6) {
+    for (int i = 0; i < g_ipt_n; i++)
+        if (g_ipt[i].is_up == is_up && g_ipt[i].v6 == v6 && strcmp(g_ipt[i].ip, ip) == 0)
+            return &g_ipt[i];
     return NULL;
 }
 
-/* 确保表和 base chain 存在; 返回 1 成功 */
-static int nft_ensure(void) {
-    char cmd[512];
-    /* 清理旧的 iptables 残留 (升级兼容) */
-    run("iptables -t mangle -D FORWARD -j CS_TRAFFIC 2>/dev/null; "
-        "iptables -t mangle -F CS_TRAFFIC 2>/dev/null; "
-        "iptables -t mangle -X CS_TRAFFIC 2>/dev/null; "
-        "ip6tables -t mangle -D FORWARD -j CS_TRAFFIC6 2>/dev/null; "
-        "ip6tables -t mangle -F CS_TRAFFIC6 2>/dev/null; "
-        "ip6tables -t mangle -X CS_TRAFFIC6 2>/dev/null");
-    /* 建表建链 (base chain 直接挂 forward hook, 不碰 firewall4) */
-    snprintf(cmd, sizeof cmd,
-             "nft delete table inet %s 2>/dev/null; "
-             "nft add table inet %s 2>/dev/null && "
-             "nft add chain inet %s %s "
-             "'{ type filter hook forward priority -151; policy accept; }' 2>/dev/null",
-             NFT_TABLE, NFT_TABLE, NFT_TABLE, NFT_CHAIN);
-    run(cmd);
-    snprintf(cmd, sizeof cmd,
-             "nft list chain inet %s %s 2>/dev/null | grep -q 'type filter'",
-             NFT_TABLE, NFT_CHAIN);
-    return system(cmd) == 0;
+/* 确保 RRDIPT_FORWARD 链存在 (wrtbwmon 方式); 返回 1 成功 */
+static int ipt_ensure(void) {
+    /* 清理 nft 残留 */
+    run("nft delete table inet cs_traffic 2>/dev/null");
+    /* 建链 */
+    run("iptables -t mangle -N RRDIPT_FORWARD 2>/dev/null; "
+        "iptables -t mangle -C FORWARD -j RRDIPT_FORWARD 2>/dev/null || "
+        "iptables -t mangle -I FORWARD -j RRDIPT_FORWARD 2>/dev/null");
+    run("ip6tables -t mangle -N RRDIPT_FORWARD 2>/dev/null; "
+        "ip6tables -t mangle -C FORWARD -j RRDIPT_FORWARD 2>/dev/null || "
+        "ip6tables -t mangle -I FORWARD -j RRDIPT_FORWARD 2>/dev/null");
+    return 1;
 }
 
-/* 加一条计数规则, 返回 handle (0=失败) */
-static unsigned long nft_add_rule(const char *match, const char *cname) {
-    char cmd[512], out[512];
-    snprintf(cmd, sizeof cmd,
-             "nft --json add rule inet %s %s %s counter name %s 2>/dev/null",
-             NFT_TABLE, NFT_CHAIN, match, cname);
-    FILE *f = popen(cmd, "r");
-    if (!f) return 0;
-    size_t n = fread(out, 1, sizeof out - 1, f);
-    pclose(f);
-    out[n] = '\0';
-    const char *ph = strstr(out, "\"handle\"");
-    if (!ph) return 0;
-    ph = strchr(ph, ':');
-    if (!ph) return 0;
-    return (unsigned long)strtoul(ph + 1, NULL, 10);
-}
-
-static void nft_del_rule(unsigned long handle) {
+/* 加一条规则: -s IP 或 -d IP (wrtbwmon 方式) */
+static void ipt_add_rule(const char *ip, int is_up, int v6) {
+    const char *ipt = v6 ? "ip6tables" : "iptables";
     char cmd[256];
-    snprintf(cmd, sizeof cmd,
-             "nft delete rule inet %s %s handle %lu 2>/dev/null",
-             NFT_TABLE, NFT_CHAIN, handle);
-    run(cmd);
+    snprintf(cmd, sizeof cmd, "%s -t mangle -C RRDIPT_FORWARD %s %s -j RETURN 2>/dev/null",
+             ipt, is_up ? "-s" : "-d", ip);
+    if (system(cmd) == 0) return;
+    snprintf(cmd, sizeof cmd, "%s -t mangle -A RRDIPT_FORWARD %s %s -j RETURN 2>/dev/null",
+             ipt, is_up ? "-s" : "-d", ip);
+    system(cmd);
 }
 
-/* 为一个 IP 建上传/下载两条规则 */
-/* 为一个 IP 建上传/下载两条规则, 限定 WAN 口 (只计 WAN 流量) */
-static void nft_add_ip(const char *ipstr, int v6, const char *mac) {
-    /* wrtbwmon 方式: 只按 IP, 不限 WAN 口 (-s IP / -d IP) */
-    char match[192], cname[32];
+static void ipt_del_rule(const char *ip, int is_up, int v6) {
+    const char *ipt = v6 ? "ip6tables" : "iptables";
+    char cmd[256];
+    snprintf(cmd, sizeof cmd, "%s -t mangle -D RRDIPT_FORWARD %s %s -j RETURN 2>/dev/null",
+             ipt, is_up ? "-s" : "-d", ip);
+    system(cmd);
+}
+
+static void ipt_add_ip(const char *ipstr, int v6, const char *mac) {
     for (int dir = 0; dir < 2; dir++) {
         int is_up = (dir == 0);
-        snprintf(cname, sizeof cname, "%s_%s_%d",
-                 is_up ? "u" : "d", v6 ? "v6" : "v4", g_nft_seq++);
-        /* 上传: -s IP; 下载: -d IP (与 wrtbwmon 的 -s/-d RETURN 规则一致) */
-        if (v6)
-            snprintf(match, sizeof match, "ip6 %s %s",
-                     is_up ? "saddr" : "daddr", ipstr);
-        else
-            snprintf(match, sizeof match, "ip %s %s",
-                     is_up ? "saddr" : "daddr", ipstr);
-        unsigned long h = nft_add_rule(match, cname);
-        if (h && g_nft_n < 2048) {
-            NftCounter *nc = &g_nft[g_nft_n++];
-            size_t nl = strlen(cname);
-            if (nl >= sizeof nc->name) nl = sizeof nc->name - 1;
-            memcpy(nc->name, cname, nl);
-            nc->name[nl] = '\0';
-            mac_copy(nc->mac, mac);
-            nc->is_up = is_up;
-            nc->handle = h;
-            nc->last_bytes = 0;  /* 新规则计数器从 0 开始 */
+        if (ipt_find(ipstr, is_up, v6)) continue;
+        ipt_add_rule(ipstr, is_up, v6);
+        if (g_ipt_n < 2048) {
+            IptRule *r = &g_ipt[g_ipt_n++];
+            strncpy(r->ip, ipstr, sizeof r->ip - 1);
+            r->ip[sizeof r->ip - 1] = '\0';
+            mac_copy(r->mac, mac);
+            r->is_up = is_up;
+            r->v6 = v6;
+            r->last_bytes = 0;
         }
     }
 }
 
-/* 按当前映射增量同步规则; WAN 口变化时重建全部规则 */
-static void nft_sync(void) {
-    char old_wan4[32], old_wan6[32];
-    memcpy(old_wan4, g_wan4, sizeof old_wan4);
-    memcpy(old_wan6, g_wan6, sizeof old_wan6);
-    detect_wan();
-    if (strcmp(old_wan4, g_wan4) != 0 || strcmp(old_wan6, g_wan6) != 0) {
-        /* WAN 口变了: 删掉全部规则重建 (计数器 1s 采样已读走, 损失 <1s) */
-        for (int i = 0; i < g_nft_n; i++)
-            nft_del_rule(g_nft[i].handle);
-        g_nft_n = 0;
-    }
+/* 按当前映射增量同步规则 */
+static void ipt_sync(void) {
     for (int i = 0; i < g_map_n; i++) {
         char ipstr[64];
         if (g_map[i].v6)
@@ -328,132 +287,79 @@ static void nft_sync(void) {
             struct in_addr a = { .s_addr = g_map[i].v4 };
             inet_ntop(AF_INET, &a, ipstr, sizeof ipstr);
         }
-        int found = 0;
-        for (int j = 0; j < g_nft_n; j++)
-            if (strcasecmp(g_nft[j].mac, g_map[i].mac) == 0) { found = 1; break; }
-        if (!found)
-            nft_add_ip(ipstr, g_map[i].v6, g_map[i].mac);
+        ipt_add_ip(ipstr, g_map[i].v6, g_map[i].mac);
     }
-    for (int i = 0; i < g_nft_n; ) {
+    for (int i = 0; i < g_ipt_n; ) {
         int want = 0;
-        for (int j = 0; j < g_map_n; j++)
-            if (strcasecmp(g_nft[i].mac, g_map[j].mac) == 0) { want = 1; break; }
+        for (int j = 0; j < g_map_n; j++) {
+            char ipstr[64];
+            if (g_map[j].v6)
+                inet_ntop(AF_INET6, &g_map[j].a6, ipstr, sizeof ipstr);
+            else {
+                struct in_addr a = { .s_addr = g_map[j].v4 };
+                inet_ntop(AF_INET, &a, ipstr, sizeof ipstr);
+            }
+            if (g_ipt[i].v6 == g_map[j].v6 && strcmp(g_ipt[i].ip, ipstr) == 0) {
+                want = 1; break;
+            }
+        }
         if (!want) {
-            nft_del_rule(g_nft[i].handle);
-            g_nft[i] = g_nft[--g_nft_n];
+            ipt_del_rule(g_ipt[i].ip, g_ipt[i].is_up, g_ipt[i].v6);
+            g_ipt[i] = g_ipt[--g_ipt_n];
         } else i++;
     }
 }
 
-
-/* ─── 客户端累计 ─────────────────────────────────── */
-
-typedef struct {
-    char mac[ML];
-    char ip[64];
-    uint64_t rx_hist[TRAF_SLOTS], tx_hist[TRAF_SLOTS];
-    time_t ts_hist[TRAF_SLOTS];
-    int head, n;
-    double rx_spd, tx_spd;                 /* 字节/秒, 滑动窗口 */
-    uint64_t rx_tot, tx_tot;              /* 累计 (单调): iptables + HW */
-    uint64_t hwr_tot, hwt_tot;            /* 累计硬件加速字节 */
-    uint64_t prev_tot;                    /* 上 tick 的 rx+tx, 用于判停 */
-    int flat_ticks;                       /* 连续累计不变的 tick 数 */
-} TrafCli;
-
-static TrafCli g_cli[MAX_CLI];
-static int g_cli_n;
-
-static TrafCli *traf_find(const char *mac, int create) {
-    for (int i = 0; i < g_cli_n; i++)
-        if (strcasecmp(g_cli[i].mac, mac) == 0) return &g_cli[i];
-    if (!create || g_cli_n >= MAX_CLI) return NULL;
-    TrafCli *tc = &g_cli[g_cli_n++];
-    memset(tc, 0, sizeof *tc);
-    mac_copy(tc->mac, mac);
-    upper(tc->mac);
-    /* 回填 IP (map 里第一个命中的) */
-    for (int i = 0; i < g_map_n; i++) {
-        if (strcasecmp(g_map[i].mac, tc->mac) == 0) {
-            if (g_map[i].v6)
-                inet_ntop(AF_INET6, &g_map[i].a6, tc->ip, sizeof tc->ip);
-            else {
-                struct in_addr a = { .s_addr = g_map[i].v4 };
-                inet_ntop(AF_INET, &a, tc->ip, sizeof tc->ip);
-            }
-            break;
+/* 解析 iptables -nvxL 输出; -Z 原子清零 (wrtbwmon 方式) */
+static void ipt_sample(void) {
+    for (int v6 = 0; v6 <= 1; v6++) {
+        const char *ipt = v6 ? "ip6tables" : "iptables";
+        char cmd[256];
+        snprintf(cmd, sizeof cmd, "%s -t mangle -nvxL RRDIPT_FORWARD -Z 2>/dev/null", ipt);
+        FILE *f = popen(cmd, "r");
+        if (!f) continue;
+        char line[512];
+        while (fgets(line, sizeof line, f)) {
+            if ((strstr(line, "pkts") && strstr(line, "bytes")) || strstr(line, "Chain"))
+                continue;
+            unsigned long bytes;
+            char target[32], prot[16], opt[16], in[16], out[16], src[64], dst[64];
+            unsigned long pkts_dummy;
+            if (sscanf(line, "%lu %lu %31s %15s %15s %15s %15s %63s %63s",
+                       &pkts_dummy, &bytes, target, prot, opt, in, out, src, dst) < 9)
+                continue;
+            if (strcmp(target, "RETURN") != 0) continue;
+            const char *any = v6 ? "::/0" : "0.0.0.0/0";
+            int is_up = -1;
+            const char *ip = NULL;
+            if (strcmp(dst, any) == 0 && strcmp(src, any) != 0) {
+                is_up = 1; ip = src;
+            } else if (strcmp(src, any) == 0 && strcmp(dst, any) != 0) {
+                is_up = 0; ip = dst;
+            } else continue;
+            char ip_clean[64];
+            strncpy(ip_clean, ip, sizeof ip_clean - 1);
+            ip_clean[sizeof ip_clean - 1] = '\0';
+            char *slash = strchr(ip_clean, '/');
+            if (slash) *slash = '\0';
+            IptRule *r = ipt_find(ip_clean, is_up, v6);
+            if (!r) continue;
+            /* -Z 已清零: bytes 即本周期增量. 若 -Z 失效 (bytes 累计), 用差值法 */
+            uint64_t delta;
+            if (bytes >= r->last_bytes)
+                delta = bytes - r->last_bytes;
+            else
+                delta = bytes;  /* 被清零过, 直接用 */
+            r->last_bytes = bytes;
+            if (delta == 0) continue;
+            TrafCli *tc = cli_find_or_add(r->mac, ip_clean);
+            if (!tc) continue;
+            if (is_up) tc->tx_hist[tc->head] += delta;
+            else tc->rx_hist[tc->head] += delta;
         }
-    }
-    return tc;
-}
-
-/* -Z 读计数器: 每行 "pkts bytes target prot opt in out source dest" */
-/* 解析 nft --json list counters 输出, 归属增量 */
-static void nft_parse_counters(const char *json) {
-    const char *p = json;
-    while ((p = strstr(p, "\"name\"")) != NULL) {
-        p = strchr(p, ':');
-        if (!p) break;
-        p++;
-        while (*p && isspace((unsigned char)*p)) p++;
-        if (*p != '"') continue;
-        p++;
-        char name[32];
-        int i = 0;
-        while (*p && *p != '"' && i < 31) name[i++] = *p++;
-        name[i] = '\0';
-        const char *b = strstr(p, "\"bytes\"");
-        if (!b) break;
-        b = strchr(b, ':');
-        if (!b) break;
-        unsigned long long bytes = strtoull(b + 1, NULL, 10);
-        NftCounter *nc = nft_find(name);
-        if (nc) {
-            /* 差值法: 不依赖 reset, reset 失效也不会平方级暴涨 */
-            uint64_t delta = 0;
-            if (bytes >= nc->last_bytes)
-                delta = bytes - nc->last_bytes;
-            /* bytes < last_bytes: 计数器被重置/回绕, 记 0 防暴涨 */
-            nc->last_bytes = bytes;
-            if (delta > 0) {
-                TrafCli *tc = traf_find(nc->mac, 1);
-                if (tc) {
-                    if (nc->is_up) tc->tx_tot += delta;
-                    else          tc->rx_tot += delta;
-                }
-            }
-        }
-        p = b + 1;
+        pclose(f);
     }
 }
-
-/* 采样: 读 JSON 计数器 + 重置 (下次读到的是新増量) */
-static void nft_sample(void) {
-    char cmd[256], *buf = NULL;
-    size_t cap = 65536, len = 0;
-    snprintf(cmd, sizeof cmd,
-             "nft --json list counters table inet %s 2>/dev/null", NFT_TABLE);
-    FILE *f = popen(cmd, "r");
-    if (!f) return;
-    buf = malloc(cap);
-    if (!buf) { pclose(f); return; }
-    size_t r;
-    while ((r = fread(buf + len, 1, cap - len - 1, f)) > 0) {
-        len += r;
-        if (len + 1 >= cap) {
-            cap *= 2;
-            char *nb = realloc(buf, cap);
-            if (!nb) break;
-            buf = nb;
-        }
-    }
-    pclose(f);
-    buf[len] = '\0';
-    nft_parse_counters(buf);
-    free(buf);
-    /* 不再 reset: 用 last_bytes 差值法, 避免 reset 失效导致平方级暴涨 */
-}
-
 
 /* ─── conntrack [HW_OFFLOAD] 补充 ─────────────────── */
 
@@ -737,10 +643,9 @@ void traf_init(const char *lan_iface) {
             fclose(sf);
         }
     }
-    /* 建表建链 (nft_ensure 内已 delete 重建, 无残留) */
-    nft_ensure();
-    g_nft_n = 0;
-    g_nft_seq = 0;
+    /* 建链 (ipt_ensure 内已处理, 无残留) */
+    ipt_ensure();
+    g_ipt_n = 0;
     traf_rebuild_map();
 }
 
@@ -749,7 +654,7 @@ void traf_tick(void) {
     time_t now = time(NULL);
     tick++;
 
-    nft_sample();   /* nft 命名计数器增量, 主数据源 (wrtbwmon 方式) */
+    ipt_sample();   /* nft 命名计数器增量, 主数据源 (wrtbwmon 方式) */
     /* hw_sample() 已禁用: 按 wrtbwmon 原理, 只用 nft, 不用 conntrack 补充 */
     /* hw_sample();    /\* conntrack [HW_OFFLOAD] 增量, 硬件补充 *\/ */
 
